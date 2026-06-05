@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create GitHub Releases
+  packages: write   # push to GHCR
+  id-token: write   # PyPI OIDC trusted publishing
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3.7.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/pwpush-mcp
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Generate Docker MCP Gateway metadata label
+        run: |
+          pip install -e . -q
+          SERVER_METADATA=$(python scripts/gen_metadata.py)
+          echo "SERVER_METADATA=${SERVER_METADATA}" >> "$GITHUB_ENV"
+
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SERVER_METADATA=${{ env.SERVER_METADATA }}
+          provenance: true
+          sbom: true
+
+      # Create a GitHub Release only when a vX.Y.Z tag is pushed.
+      # --generate-notes builds the changelog from commits since the previous tag.
+      # `gh release create` is idempotent: it exits 0 if the release already exists.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --latest \
+          || echo "Release already exists, skipping."
+
+  # Publish to PyPI on every vX.Y.Z tag. Runs in the same workflow so the
+  # GITHUB_TOKEN cross-workflow event limitation is irrelevant.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: image
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pwpush-mcp
+    permissions:
+      id-token: write  # OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          attestations: true
