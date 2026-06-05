@@ -1,0 +1,12 @@
+services:
+  pwpush-mcp:
+    build: .
+    image: ghcr.io/k9fr4n/pwpush-mcp:dev
+    container_name: pwpush-mcp
+    restart: unless-stopped
+    env_file: .env
+    # HTTP mode (override the default stdio entrypoint). Remove this section and
+    # the `ports` block when spawning over stdio (e.g. via the Docker MCP Gateway).
+    command: ["--listen", "8000"]
+    ports:
+      - "8000:8000"
