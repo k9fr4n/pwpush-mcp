@@ -109,7 +109,7 @@ class PwpushClient:
     async def _detect_version(self) -> str:
         if self._version:
             return self._version
-        url = f"{self._config.base_url}/api/v2/version"
+        url = f"{self._config.base_url}/api/v2/version.json"
         try:
             async with httpx.AsyncClient(timeout=self._timeout, verify=self._verify) as client:
                 resp = await client.get(url, headers={"Accept": "application/json"})
@@ -255,7 +255,7 @@ class PwpushClient:
             files, handles = _open_files(k["file_paths"], "push[files][]")
             try:
                 data = await self._send(
-                    "POST", "/api/v2/pushes", "v2", require_auth=False, data=form, files=files
+                    "POST", "/api/v2/pushes.json", "v2", require_auth=False, data=form, files=files
                 )
             finally:
                 for handle in handles:
@@ -263,7 +263,7 @@ class PwpushClient:
         else:
             push["kind"] = k["kind"]
             data = await self._send(
-                "POST", "/api/v2/pushes", "v2", require_auth=False, json={"push": push}
+                "POST", "/api/v2/pushes.json", "v2", require_auth=False, json={"push": push}
             )
         return _public(data)
 
@@ -317,7 +317,7 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             return await self._send(
-                "GET", f"/api/v2/pushes/{url_token}/preview", "v2", require_auth=False
+                "GET", f"/api/v2/pushes/{url_token}/preview.json", "v2", require_auth=False
             )
         return await self._send(
             "GET", f"/p/{url_token}/preview.json", "v1", require_auth=False
@@ -327,7 +327,7 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             data = await self._send(
-                "DELETE", f"/api/v2/pushes/{url_token}", "v2", require_auth=False
+                "DELETE", f"/api/v2/pushes/{url_token}.json", "v2", require_auth=False
             )
         else:
             data = await self._send(
@@ -339,7 +339,7 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             return await self._send(
-                "GET", f"/api/v2/pushes/{url_token}/audit", "v2",
+                "GET", f"/api/v2/pushes/{url_token}/audit.json", "v2",
                 require_auth=True, params={"page": page},
             )
         return await self._send(
@@ -352,7 +352,7 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             data = await self._send(
-                "GET", f"/api/v2/pushes/{state}", "v2",
+                "GET", f"/api/v2/pushes/{state}.json", "v2",
                 require_auth=True, params={"page": page},
             )
         else:
@@ -364,7 +364,7 @@ class PwpushClient:
     async def version(self) -> dict[str, Any]:
         detected = await self._detect_version()
         if detected == "v2":
-            data = await self._send("GET", "/api/v2/version", "v2", require_auth=False)
+            data = await self._send("GET", "/api/v2/version.json", "v2", require_auth=False)
             if isinstance(data, dict):
                 data.setdefault("detected_api_version", "v2")
             return data

@@ -42,7 +42,7 @@ def test_public_strips_sensitive():
 
 @respx.mock
 async def test_v2_create_strips_payload_and_maps_duration():
-    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+    route = respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(
             201, json={"url_token": "abc", "html_url": f"{BASE}/p/abc", "payload": "leak"}
         )
@@ -56,7 +56,7 @@ async def test_v2_create_strips_payload_and_maps_duration():
 
 @respx.mock
 async def test_v2_create_works_without_token():
-    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+    route = respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(201, json={"url_token": "abc"})
     )
     await create(make_client(token=None))
@@ -65,7 +65,7 @@ async def test_v2_create_works_without_token():
 
 @respx.mock
 async def test_v2_bearer_sent_on_expire():
-    route = respx.delete(f"{BASE}/api/v2/pushes/abc").mock(
+    route = respx.delete(f"{BASE}/api/v2/pushes/abc.json").mock(
         return_value=httpx.Response(200, json={"expired": True})
     )
     await make_client("mytoken").expire_push("abc")
@@ -76,7 +76,7 @@ async def test_v2_bearer_sent_on_expire():
 async def test_v2_file_push_multipart(tmp_path):
     f = tmp_path / "creds.txt"
     f.write_text("hello")
-    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+    route = respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(201, json={"url_token": "abc", "payload": "leak"})
     )
     result = await create(make_client(), payload=None, file_paths=[str(f)])
@@ -143,7 +143,7 @@ async def test_v1_file_push_disabled_maps_to_feature_error(tmp_path):
 
 @respx.mock
 async def test_autodetect_v1_when_v2_version_404():
-    respx.get(f"{BASE}/api/v2/version").mock(return_value=httpx.Response(404))
+    respx.get(f"{BASE}/api/v2/version.json").mock(return_value=httpx.Response(404))
     route = respx.post(f"{BASE}/p.json").mock(
         return_value=httpx.Response(201, json={"url_token": "x"})
     )
@@ -153,10 +153,10 @@ async def test_autodetect_v1_when_v2_version_404():
 
 @respx.mock
 async def test_autodetect_v2_when_version_present():
-    respx.get(f"{BASE}/api/v2/version").mock(
+    respx.get(f"{BASE}/api/v2/version.json").mock(
         return_value=httpx.Response(200, json={"version": "2.0"})
     )
-    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+    route = respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(201, json={"url_token": "x"})
     )
     await create(make_client(version="auto"))
@@ -170,7 +170,7 @@ async def test_listing_requires_token():
 
 @respx.mock
 async def test_rate_limit_surfaced():
-    respx.post(f"{BASE}/api/v2/pushes").mock(
+    respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(429, headers={"Retry-After": "30"})
     )
     with pytest.raises(PwpushError, match="429.*30"):
