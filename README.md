@@ -89,9 +89,8 @@ enum index `0`–`17`.
 
 ## Install & run
 
-> Published artifacts (`pwpush-mcp` on PyPI, `ghcr.io/k9fr4n/pwpush-mcp` on GHCR)
-> are produced by the release workflow on the first `v0.2.0` tag. Until then,
-> install from source.
+> Published as `pwpush-mcp` on PyPI and `ghcr.io/k9fr4n/pwpush-mcp` on GHCR,
+> produced by the release workflow on each version tag (latest: `v0.2.0`).
 
 With [`uv`](https://docs.astral.sh/uv/) (recommended):
 
