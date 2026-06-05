@@ -19,6 +19,7 @@ env/
 # Env / secrets
 .env
 .env.local
+.mcp.json
 
 # OS
 .DS_Store
