@@ -1,13 +1,97 @@
-"""Entry point: run the MCP server over stdio."""
+"""Entry point: ``python -m pwpush_mcp`` or the ``pwpush-mcp`` console script.
+
+Default transport is stdio (Claude Desktop / Claude Code / Docker MCP Gateway).
+Pass ``--listen PORT`` to expose the server over Streamable-HTTP/SSE behind a
+network gateway.
+"""
 
 from __future__ import annotations
 
-from .server import mcp
+import argparse
+import asyncio
+import logging
+import sys
+from typing import Any
+
+from .config import Config
+from .server import build_server
+
+log = logging.getLogger("pwpush_mcp")
+
+_SSL_WARNING = (
+    "SECURITY WARNING: PWPUSH_VERIFY_SSL=false — TLS certificate verification is "
+    "DISABLED. All HTTPS connections are vulnerable to MITM attacks. Set "
+    "PWPUSH_VERIFY_SSL=true (or PWPUSH_CA_BUNDLE) for production use."
+)
 
 
-def main() -> None:
-    mcp.run()
+async def _run_stdio() -> None:
+    from mcp.server.stdio import stdio_server
+
+    server = build_server()
+    if not server._cfg.verify_ssl:
+        log.warning(_SSL_WARNING)
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+async def _run_http(host: str, port: int, log_level: str) -> None:
+    """Run as an SSE / Streamable-HTTP server."""
+    import uvicorn
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.responses import Response
+    from starlette.routing import Mount, Route
+
+    server = build_server()
+    if not server._cfg.verify_ssl:
+        log.warning(_SSL_WARNING)
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Any) -> Response:  # starlette Request
+        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+            await server.run(streams[0], streams[1], server.create_initialization_options())
+        return Response()
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ]
+    )
+    config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+    await uvicorn.Server(config).serve()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="pwpush-mcp", description="Password Pusher MCP server.")
+    parser.add_argument(
+        "--listen",
+        type=int,
+        metavar="PORT",
+        help="Run as an HTTP/SSE server on this port. Default: stdio mode.",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host for --listen mode.")
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=args.log_level,
+        stream=sys.stderr,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    # Fail fast on a missing base URL / malformed config before opening transport.
+    Config.from_env()
+
+    if args.listen:
+        asyncio.run(_run_http(args.host, args.listen, args.log_level))
+    else:
+        asyncio.run(_run_stdio())
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -15,6 +15,12 @@ env/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local planning notes
+.claude/plans/
 
 # Env / secrets
 .env

@@ -22,7 +22,9 @@ Design invariants (both versions):
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
+import random
 from pathlib import Path
 from typing import Any
 
@@ -95,14 +97,55 @@ def _open_files(file_paths: list[str], field: str) -> tuple[list, list]:
     return files, handles
 
 
+# Status codes worth retrying with backoff: rate limiting and transient
+# upstream/server errors. 4xx other than 429 are caller errors — never retried.
+_RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
 class PwpushClient:
-    def __init__(self, config: Config, *, timeout: float = 30.0) -> None:
+    def __init__(self, config: Config, *, timeout: float | None = None) -> None:
         self._config = config
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else config.timeout
         self._verify = config.verify
+        self._max_retries = config.max_retries
         self._version: str | None = (
             config.api_version if config.api_version in ("v1", "v2") else None
         )
+        # Lazily created on first use so it is bound to the running event loop.
+        self._semaphore: asyncio.Semaphore | None = None
+
+    def _limiter(self) -> asyncio.Semaphore | None:
+        """Return the concurrency semaphore, creating it on first use.
+
+        ``max_concurrent == 0`` means unlimited, so no semaphore is used.
+        """
+        if self._config.max_concurrent <= 0:
+            return None
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._config.max_concurrent)
+        return self._semaphore
+
+    def _new_client(self) -> httpx.AsyncClient:
+        """Build an AsyncClient with transport-level connection retries.
+
+        ``httpx`` retries only connection establishment errors here; HTTP-level
+        retries (429 / 5xx) are handled explicitly in :meth:`_send` so we can
+        honour ``Retry-After`` and apply jittered backoff.
+        """
+        transport = httpx.AsyncHTTPTransport(retries=self._max_retries)
+        return httpx.AsyncClient(timeout=self._timeout, verify=self._verify, transport=transport)
+
+    @staticmethod
+    def _backoff_seconds(resp: httpx.Response, attempt: int) -> float:
+        """Backoff delay: honour ``Retry-After`` on 429, else jittered expo."""
+        if resp.status_code == 429:
+            raw = resp.headers.get("Retry-After")
+            if raw:
+                try:
+                    return min(float(raw), 30.0)
+                except ValueError:
+                    pass
+        return min(2.0**attempt + random.random(), 30.0)
 
     # -- Version detection --------------------------------------------------
 
@@ -111,12 +154,10 @@ class PwpushClient:
             return self._version
         url = f"{self._config.base_url}/api/v2/version.json"
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, verify=self._verify) as client:
+            async with self._new_client() as client:
                 resp = await client.get(url, headers={"Accept": "application/json"})
         except httpx.RequestError as exc:
-            raise PwpushError(
-                f"network error contacting {self._config.base_url}: {exc}"
-            ) from exc
+            raise PwpushError(f"network error contacting {self._config.base_url}: {exc}") from exc
         # v2 instances serve this route (200, no auth); v1 instances 404 it.
         self._version = "v2" if resp.status_code != 404 else "v1"
         return self._version
@@ -164,21 +205,49 @@ class PwpushClient:
         files: list[tuple[str, Any]] | None = None,
     ) -> Any:
         url = f"{self._config.base_url}{path}"
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout, verify=self._verify) as client:
-                resp = await client.request(
-                    method,
-                    url,
-                    headers=self._headers(version, require_auth=require_auth),
-                    json=json,
-                    params=params,
-                    data=data,
-                    files=files,
-                )
-        except httpx.RequestError as exc:
-            raise PwpushError(
-                f"network error contacting {self._config.base_url}: {exc}"
-            ) from exc
+        headers = self._headers(version, require_auth=require_auth)
+        limiter = self._limiter()
+
+        # Application-level retry loop for 429 / 5xx. Multipart uploads carry
+        # open file handles positioned at EOF after the first send, so they are
+        # not retried (file pushes are rare and one-shot by nature).
+        attempts = 1 if files else self._max_retries + 1
+        resp: httpx.Response | None = None
+        for attempt in range(attempts):
+            try:
+                if limiter is not None:
+                    async with limiter, self._new_client() as client:
+                        resp = await client.request(
+                            method,
+                            url,
+                            headers=headers,
+                            json=json,
+                            params=params,
+                            data=data,
+                            files=files,
+                        )
+                else:
+                    async with self._new_client() as client:
+                        resp = await client.request(
+                            method,
+                            url,
+                            headers=headers,
+                            json=json,
+                            params=params,
+                            data=data,
+                            files=files,
+                        )
+            except httpx.RequestError as exc:
+                raise PwpushError(
+                    f"network error contacting {self._config.base_url}: {exc}"
+                ) from exc
+
+            if resp.status_code in _RETRYABLE_STATUS and attempt < attempts - 1:
+                await asyncio.sleep(self._backoff_seconds(resp, attempt))
+                continue
+            break
+
+        assert resp is not None  # loop always assigns or raises
 
         if resp.status_code == 429:
             retry = resp.headers.get("Retry-After", "unknown")
@@ -221,16 +290,26 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             return await self._create_v2(
-                payload=payload, kind=kind, duration=duration,
-                expire_after_views=expire_after_views, passphrase=passphrase,
-                name=name, note=note, deletable_by_viewer=deletable_by_viewer,
-                retrieval_step=retrieval_step, file_paths=file_paths,
+                payload=payload,
+                kind=kind,
+                duration=duration,
+                expire_after_views=expire_after_views,
+                passphrase=passphrase,
+                name=name,
+                note=note,
+                deletable_by_viewer=deletable_by_viewer,
+                retrieval_step=retrieval_step,
+                file_paths=file_paths,
             )
         return await self._create_v1(
-            payload=payload, kind=kind, duration=duration,
-            expire_after_views=expire_after_views, passphrase=passphrase,
+            payload=payload,
+            kind=kind,
+            duration=duration,
+            expire_after_views=expire_after_views,
+            passphrase=passphrase,
             deletable_by_viewer=deletable_by_viewer,
-            retrieval_step=retrieval_step, file_paths=file_paths,
+            retrieval_step=retrieval_step,
+            file_paths=file_paths,
         )
 
     async def _create_v2(self, **k: Any) -> dict[str, Any]:
@@ -292,14 +371,10 @@ class PwpushClient:
                     handle.close()
         elif k["kind"] == "url":
             body = {"url": {"payload": k["payload"], **common}}
-            data = await self._send_v1_typed(
-                "/r.json", "URL pushes", require_auth=False, json=body
-            )
+            data = await self._send_v1_typed("/r.json", "URL pushes", require_auth=False, json=body)
         else:  # text (qr is not a distinct v1 endpoint; treated as text)
             body = {"password": {"payload": k["payload"], **common}}
-            data = await self._send(
-                "POST", "/p.json", "v1", require_auth=False, json=body
-            )
+            data = await self._send("POST", "/p.json", "v1", require_auth=False, json=body)
         return _public(data)
 
     async def _send_v1_typed(self, path: str, feature: str, **kw: Any) -> Any:
@@ -319,9 +394,7 @@ class PwpushClient:
             return await self._send(
                 "GET", f"/api/v2/pushes/{url_token}/preview.json", "v2", require_auth=False
             )
-        return await self._send(
-            "GET", f"/p/{url_token}/preview.json", "v1", require_auth=False
-        )
+        return await self._send("GET", f"/p/{url_token}/preview.json", "v1", require_auth=False)
 
     async def expire_push(self, url_token: str) -> dict[str, Any]:
         version = await self._detect_version()
@@ -330,21 +403,20 @@ class PwpushClient:
                 "DELETE", f"/api/v2/pushes/{url_token}.json", "v2", require_auth=False
             )
         else:
-            data = await self._send(
-                "DELETE", f"/p/{url_token}.json", "v1", require_auth=False
-            )
+            data = await self._send("DELETE", f"/p/{url_token}.json", "v1", require_auth=False)
         return _public(data)
 
     async def push_audit(self, url_token: str, *, page: int = 1) -> Any:
         version = await self._detect_version()
         if version == "v2":
             return await self._send(
-                "GET", f"/api/v2/pushes/{url_token}/audit.json", "v2",
-                require_auth=True, params={"page": page},
+                "GET",
+                f"/api/v2/pushes/{url_token}/audit.json",
+                "v2",
+                require_auth=True,
+                params={"page": page},
             )
-        return await self._send(
-            "GET", f"/p/{url_token}/audit.json", "v1", require_auth=True
-        )
+        return await self._send("GET", f"/p/{url_token}/audit.json", "v1", require_auth=True)
 
     async def list_pushes(self, state: str, *, page: int = 1) -> Any:
         if state not in ("active", "expired"):
@@ -352,13 +424,14 @@ class PwpushClient:
         version = await self._detect_version()
         if version == "v2":
             data = await self._send(
-                "GET", f"/api/v2/pushes/{state}.json", "v2",
-                require_auth=True, params={"page": page},
+                "GET",
+                f"/api/v2/pushes/{state}.json",
+                "v2",
+                require_auth=True,
+                params={"page": page},
             )
         else:
-            data = await self._send(
-                "GET", f"/p/{state}.json", "v1", require_auth=True
-            )
+            data = await self._send("GET", f"/p/{state}.json", "v1", require_auth=True)
         return _public(data)
 
     async def version(self) -> dict[str, Any]:

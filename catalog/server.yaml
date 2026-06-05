@@ -1,0 +1,61 @@
+# Docker MCP catalog entry for pwpush-mcp.
+#
+# Usage with a custom local catalog:
+#   docker mcp catalog create pwpush-private
+#   docker mcp catalog add  pwpush-private pwpush-mcp ./catalog/server.yaml
+#   docker mcp server  enable pwpush-mcp
+#   docker mcp gateway run    --catalog pwpush-private
+#
+# Or submit upstream to https://github.com/docker/mcp-registry
+name: pwpush-mcp
+image: ghcr.io/k9fr4n/pwpush-mcp:latest
+type: server
+meta:
+  category: security
+  tags:
+    - secrets
+    - password-pusher
+    - pwpush
+    - sharing
+about:
+  title: Password Pusher
+  description: >-
+    Create and manage self-destructing secret links via Password Pusher
+    (pwpush): create text / URL / QR / file pushes, preview a push's share URL
+    without consuming a view, expire a push, read its audit log, and list
+    active / expired pushes. The secret payload is never retrieved through the
+    server — retrieval consumes a view and stays a human action via the URL.
+  icon: https://pwpush.com/apple-touch-icon.png
+source:
+  project: https://github.com/k9fr4n/pwpush-mcp
+config:
+  description: Configure access to your Password Pusher instance.
+  secrets:
+    - name: pwpush-mcp.api_token
+      env: PWPUSH_API_TOKEN
+      example: "xxxxxxxxxxxxxxxxxxxxxxxx"
+  env:
+    - name: PWPUSH_BASE_URL
+      example: https://pwpush.com
+      value: '{{pwpush-mcp.base_url}}'
+    - name: PWPUSH_API_EMAIL
+      example: you@example.com
+      value: '{{pwpush-mcp.api_email}}'
+    - name: PWPUSH_API_VERSION
+      example: "auto"
+      value: '{{pwpush-mcp.api_version}}'
+    - name: PWPUSH_VERIFY_SSL
+      example: "true"
+      value: '{{pwpush-mcp.verify_ssl}}'
+    - name: PWPUSH_READ_ONLY
+      example: "false"
+      value: '{{pwpush-mcp.read_only}}'
+    - name: PWPUSH_ENABLED_TOOLS
+      example: "list_*,get_version,preview_push"
+      value: '{{pwpush-mcp.enabled_tools}}'
+    - name: PWPUSH_AUDIT_LOG
+      example: "true"
+      value: '{{pwpush-mcp.audit_log}}'
+    - name: PWPUSH_MAX_CONCURRENT
+      example: "0"
+      value: '{{pwpush-mcp.max_concurrent}}'
