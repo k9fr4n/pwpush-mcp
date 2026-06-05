@@ -1,15 +1,23 @@
-"""Thin async wrapper around the Password Pusher API v2.
+"""Thin async wrapper around the Password Pusher API (v1 and v2).
 
-Design notes:
-- The secret ``payload`` and ``files`` are never logged and are stripped from
-  any object this client returns to callers, so a push secret can never leak
-  back through the MCP layer.
-- This client deliberately exposes no "retrieve" operation: retrieving a push
-  consumes a view irreversibly, which is unsafe to perform from an agent.
-- Authentication is optional. The bearer token is sent whenever it is
-  configured; an operation only fails up-front for a missing token when the
-  endpoint is inherently account-scoped (listing, audit). Some instances allow
-  anonymous push creation, expiry (for deletable pushes), and preview.
+Two API generations exist in the wild:
+
+- **v2** (pwpush.com, eu.pwpush.com, recent self-hosted): JSON under
+  ``/api/v2/pushes``, a ``push`` wrapper, ``expire_after_duration`` as an enum
+  index 0..17, and ``Authorization: Bearer`` auth.
+- **v1** (older self-hosted instances): the classic ``/p.json`` endpoints, a
+  ``password`` wrapper, ``expire_after_days`` (whole days), and
+  ``X-User-Token`` / ``X-User-Email`` auth.
+
+The client auto-detects the generation (overridable via ``PWPUSH_API_VERSION``)
+and presents a single normalized interface to the tools.
+
+Design invariants (both versions):
+- The secret ``payload``/``files`` are never logged and are stripped from any
+  object returned to callers.
+- No "retrieve" operation is exposed: retrieving a push consumes a view.
+- Authentication is sent when configured; an operation only fails up-front for
+  a missing token when the endpoint is inherently account-scoped (list, audit).
 """
 
 from __future__ import annotations
@@ -22,16 +30,20 @@ import httpx
 
 from . import __version__
 from .config import Config
+from .durations import resolve_days, resolve_duration
 
 # API fields that must never be returned to the model.
 _SENSITIVE_FIELDS = ("payload", "files")
 
-# Push kinds. File pushes are handled via multipart uploads (see create_push).
 SUPPORTED_KINDS = ("text", "url", "qr", "file")
 
 
 class PwpushError(Exception):
     """Raised for any API, authentication, or network failure."""
+
+
+class FeatureDisabledError(PwpushError):
+    """Raised when an instance does not enable a requested push type."""
 
 
 def _public(obj: Any) -> Any:
@@ -58,36 +70,92 @@ def _safe_detail(resp: httpx.Response) -> str:
 
 
 def _form_value(value: Any) -> str:
-    """Render a value for a multipart form field."""
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _open_files(file_paths: list[str], field: str) -> tuple[list, list]:
+    """Open local files for multipart upload. Caller must close the handles."""
+    files: list[tuple[str, Any]] = []
+    handles: list[Any] = []
+    try:
+        for raw in file_paths:
+            path = Path(raw).expanduser()
+            if not path.is_file():
+                raise PwpushError(f"file not found: {raw}")
+            handle = path.open("rb")
+            handles.append(handle)
+            ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            files.append((field, (path.name, handle, ctype)))
+    except Exception:
+        for handle in handles:
+            handle.close()
+        raise
+    return files, handles
 
 
 class PwpushClient:
     def __init__(self, config: Config, *, timeout: float = 30.0) -> None:
         self._config = config
         self._timeout = timeout
+        self._verify = config.verify
+        self._version: str | None = (
+            config.api_version if config.api_version in ("v1", "v2") else None
+        )
 
-    def _headers(self, *, require_auth: bool) -> dict[str, str]:
+    # -- Version detection --------------------------------------------------
+
+    async def _detect_version(self) -> str:
+        if self._version:
+            return self._version
+        url = f"{self._config.base_url}/api/v2/version"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, verify=self._verify) as client:
+                resp = await client.get(url, headers={"Accept": "application/json"})
+        except httpx.RequestError as exc:
+            raise PwpushError(
+                f"network error contacting {self._config.base_url}: {exc}"
+            ) from exc
+        # v2 instances serve this route (200, no auth); v1 instances 404 it.
+        self._version = "v2" if resp.status_code != 404 else "v1"
+        return self._version
+
+    # -- Low-level transport ------------------------------------------------
+
+    def _headers(self, version: str, *, require_auth: bool) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "User-Agent": f"pwpush-mcp/{__version__}",
         }
-        if self._config.api_token:
-            headers["Authorization"] = f"Bearer {self._config.api_token}"
-        elif require_auth:
-            raise PwpushError(
-                "This operation requires authentication, but PWPUSH_API_TOKEN "
-                "is not set. Generate a token at "
-                f"{self._config.base_url}/api_tokens and set the env var."
-            )
+        token = self._config.api_token
+        if version == "v2":
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            elif require_auth:
+                raise PwpushError(self._auth_hint())
+        else:  # v1
+            if token:
+                headers["X-User-Token"] = token
+                if self._config.api_email:
+                    headers["X-User-Email"] = self._config.api_email
+            elif require_auth:
+                raise PwpushError(self._auth_hint())
         return headers
 
-    async def _request(
+    def _auth_hint(self) -> str:
+        return (
+            "This operation requires authentication, but PWPUSH_API_TOKEN is not "
+            "set. Generate a token at "
+            f"{self._config.base_url}/api_tokens and set the env var "
+            "(v1 instances also need PWPUSH_API_EMAIL)."
+        )
+
+    async def _send(
         self,
         method: str,
         path: str,
+        version: str,
         *,
         require_auth: bool,
         json: dict[str, Any] | None = None,
@@ -95,13 +163,13 @@ class PwpushClient:
         data: dict[str, Any] | None = None,
         files: list[tuple[str, Any]] | None = None,
     ) -> Any:
-        url = f"{self._config.base_url}/api/v2{path}"
+        url = f"{self._config.base_url}{path}"
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, verify=self._verify) as client:
                 resp = await client.request(
                     method,
                     url,
-                    headers=self._headers(require_auth=require_auth),
+                    headers=self._headers(version, require_auth=require_auth),
                     json=json,
                     params=params,
                     data=data,
@@ -117,11 +185,11 @@ class PwpushClient:
             raise PwpushError(f"rate limited (429); retry after {retry}s")
         if resp.status_code == 401:
             raise PwpushError(
-                "unauthorized (401): this instance/operation requires a valid "
-                "PWPUSH_API_TOKEN"
+                "unauthorized (401): this instance/operation requires valid "
+                "credentials (PWPUSH_API_TOKEN, plus PWPUSH_API_EMAIL on v1)"
             )
         if resp.status_code == 403:
-            raise PwpushError("forbidden (403): the token lacks permission for this action")
+            raise PwpushError("forbidden (403): the credentials lack permission for this action")
         if resp.status_code == 404:
             raise PwpushError("not found (404): unknown url_token, or the push has expired")
         if resp.status_code >= 400:
@@ -138,56 +206,170 @@ class PwpushClient:
 
     async def create_push(
         self,
-        push: dict[str, Any],
         *,
+        payload: str | None,
+        kind: str,
+        duration: str,
+        expire_after_views: int,
+        passphrase: str | None,
+        name: str | None,
+        note: str | None,
+        deletable_by_viewer: bool,
+        retrieval_step: bool,
         file_paths: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Create a push. Uses multipart upload when file_paths are given."""
-        if not file_paths:
-            data = await self._request("POST", "/pushes", require_auth=False, json={"push": push})
-            return _public(data)
-
-        form: dict[str, Any] = {f"push[{k}]": _form_value(v) for k, v in push.items()}
-        form["push[kind]"] = "file"
-        files: list[tuple[str, Any]] = []
-        handles: list[Any] = []
-        try:
-            for raw in file_paths:
-                path = Path(raw).expanduser()
-                if not path.is_file():
-                    raise PwpushError(f"file not found: {raw}")
-                handle = path.open("rb")
-                handles.append(handle)
-                ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-                files.append(("push[files][]", (path.name, handle, ctype)))
-            data = await self._request(
-                "POST", "/pushes", require_auth=False, data=form, files=files
+        version = await self._detect_version()
+        if version == "v2":
+            return await self._create_v2(
+                payload=payload, kind=kind, duration=duration,
+                expire_after_views=expire_after_views, passphrase=passphrase,
+                name=name, note=note, deletable_by_viewer=deletable_by_viewer,
+                retrieval_step=retrieval_step, file_paths=file_paths,
             )
-        finally:
-            for handle in handles:
-                handle.close()
+        return await self._create_v1(
+            payload=payload, kind=kind, duration=duration,
+            expire_after_views=expire_after_views, passphrase=passphrase,
+            deletable_by_viewer=deletable_by_viewer,
+            retrieval_step=retrieval_step, file_paths=file_paths,
+        )
+
+    async def _create_v2(self, **k: Any) -> dict[str, Any]:
+        push: dict[str, Any] = {
+            "expire_after_duration": resolve_duration(k["duration"]),
+            "expire_after_views": k["expire_after_views"],
+            "deletable_by_viewer": k["deletable_by_viewer"],
+            "retrieval_step": k["retrieval_step"],
+        }
+        if k["payload"]:
+            push["payload"] = k["payload"]
+        if k["passphrase"]:
+            push["passphrase"] = k["passphrase"]
+        if k["name"]:
+            push["name"] = k["name"]
+        if k["note"]:
+            push["note"] = k["note"]
+
+        if k["file_paths"]:
+            form = {f"push[{key}]": _form_value(val) for key, val in push.items()}
+            form["push[kind]"] = "file"
+            files, handles = _open_files(k["file_paths"], "push[files][]")
+            try:
+                data = await self._send(
+                    "POST", "/api/v2/pushes", "v2", require_auth=False, data=form, files=files
+                )
+            finally:
+                for handle in handles:
+                    handle.close()
+        else:
+            push["kind"] = k["kind"]
+            data = await self._send(
+                "POST", "/api/v2/pushes", "v2", require_auth=False, json={"push": push}
+            )
         return _public(data)
 
+    async def _create_v1(self, **k: Any) -> dict[str, Any]:
+        days = resolve_days(k["duration"])
+        common = {
+            "expire_after_views": k["expire_after_views"],
+            "expire_after_days": days,
+            "deletable_by_viewer": k["deletable_by_viewer"],
+            "retrieval_step": k["retrieval_step"],
+        }
+        if k["passphrase"]:
+            common["passphrase"] = k["passphrase"]
+
+        if k["file_paths"]:
+            form = {f"file[{key}]": _form_value(val) for key, val in common.items()}
+            if k["payload"]:
+                form["file[payload]"] = k["payload"]
+            files, handles = _open_files(k["file_paths"], "file[files][]")
+            try:
+                data = await self._send_v1_typed(
+                    "/f.json", "file pushes", require_auth=False, data=form, files=files
+                )
+            finally:
+                for handle in handles:
+                    handle.close()
+        elif k["kind"] == "url":
+            body = {"url": {"payload": k["payload"], **common}}
+            data = await self._send_v1_typed(
+                "/r.json", "URL pushes", require_auth=False, json=body
+            )
+        else:  # text (qr is not a distinct v1 endpoint; treated as text)
+            body = {"password": {"payload": k["payload"], **common}}
+            data = await self._send(
+                "POST", "/p.json", "v1", require_auth=False, json=body
+            )
+        return _public(data)
+
+    async def _send_v1_typed(self, path: str, feature: str, **kw: Any) -> Any:
+        """POST to a v1 typed-push endpoint, mapping 404 to a feature hint."""
+        try:
+            return await self._send("POST", path, "v1", **kw)
+        except PwpushError as exc:
+            if "404" in str(exc):
+                raise FeatureDisabledError(
+                    f"{feature} are not enabled on this instance ({path} returned 404)"
+                ) from exc
+            raise
+
     async def preview_push(self, url_token: str) -> dict[str, Any]:
-        # Preview returns only the secret URL and never consumes a view.
-        return await self._request("GET", f"/pushes/{url_token}/preview", require_auth=False)
+        version = await self._detect_version()
+        if version == "v2":
+            return await self._send(
+                "GET", f"/api/v2/pushes/{url_token}/preview", "v2", require_auth=False
+            )
+        return await self._send(
+            "GET", f"/p/{url_token}/preview.json", "v1", require_auth=False
+        )
 
     async def expire_push(self, url_token: str) -> dict[str, Any]:
-        data = await self._request("DELETE", f"/pushes/{url_token}", require_auth=False)
+        version = await self._detect_version()
+        if version == "v2":
+            data = await self._send(
+                "DELETE", f"/api/v2/pushes/{url_token}", "v2", require_auth=False
+            )
+        else:
+            data = await self._send(
+                "DELETE", f"/p/{url_token}.json", "v1", require_auth=False
+            )
         return _public(data)
 
     async def push_audit(self, url_token: str, *, page: int = 1) -> Any:
-        return await self._request(
-            "GET", f"/pushes/{url_token}/audit", require_auth=True, params={"page": page}
+        version = await self._detect_version()
+        if version == "v2":
+            return await self._send(
+                "GET", f"/api/v2/pushes/{url_token}/audit", "v2",
+                require_auth=True, params={"page": page},
+            )
+        return await self._send(
+            "GET", f"/p/{url_token}/audit.json", "v1", require_auth=True
         )
 
     async def list_pushes(self, state: str, *, page: int = 1) -> Any:
         if state not in ("active", "expired"):
             raise PwpushError("state must be 'active' or 'expired'")
-        data = await self._request(
-            "GET", f"/pushes/{state}", require_auth=True, params={"page": page}
-        )
+        version = await self._detect_version()
+        if version == "v2":
+            data = await self._send(
+                "GET", f"/api/v2/pushes/{state}", "v2",
+                require_auth=True, params={"page": page},
+            )
+        else:
+            data = await self._send(
+                "GET", f"/p/{state}.json", "v1", require_auth=True
+            )
         return _public(data)
 
     async def version(self) -> dict[str, Any]:
-        return await self._request("GET", "/version", require_auth=False)
+        detected = await self._detect_version()
+        if detected == "v2":
+            data = await self._send("GET", "/api/v2/version", "v2", require_auth=False)
+            if isinstance(data, dict):
+                data.setdefault("detected_api_version", "v2")
+            return data
+        # v1 instances expose no version endpoint.
+        return {
+            "detected_api_version": "v1",
+            "note": "legacy instance; no /version endpoint is exposed",
+        }

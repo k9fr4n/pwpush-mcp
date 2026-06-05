@@ -1,6 +1,26 @@
 import pytest
 
-from pwpush_mcp.durations import resolve_duration
+from pwpush_mcp.durations import resolve_days, resolve_duration
+
+
+@pytest.mark.parametrize(
+    ("value", "days"),
+    [
+        ("15m", 1),  # sub-day rounds up to 1
+        ("12h", 1),
+        ("1d", 1),
+        ("6d", 6),
+        ("7d", 7),
+        ("1w", 7),
+        ("3w", 21),
+        ("1mo", 30),
+        ("3mo", 90),
+        (0, 1),
+        (17, 90),
+    ],
+)
+def test_resolve_days(value, days):
+    assert resolve_days(value) == days
 
 
 @pytest.mark.parametrize(

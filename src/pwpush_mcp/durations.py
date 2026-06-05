@@ -59,6 +59,25 @@ _ALIASES: dict[str, str] = {
 DEFAULT_LABEL = "7d"  # 7 days == one week (enum index 12)
 
 
+# Days each canonical label corresponds to, for the v1 API which expires by
+# whole days only. Sub-day durations are rounded up to one day.
+_LABEL_TO_DAYS: dict[str, int] = {
+    "15m": 1, "30m": 1, "45m": 1, "1h": 1, "6h": 1, "12h": 1,
+    "1d": 1, "2d": 2, "3d": 3, "4d": 4, "5d": 5, "6d": 6,
+    "1w": 7, "2w": 14, "3w": 21, "1mo": 30, "2mo": 60, "3mo": 90,
+}
+
+
+def resolve_days(value: int | str) -> int:
+    """Resolve a duration to whole days for the v1 API (minimum 1).
+
+    Accepts the same inputs as :func:`resolve_duration`. Sub-day labels round
+    up to one day, since the v1 API only supports day-granular expiry.
+    """
+    index = resolve_duration(value)
+    return _LABEL_TO_DAYS[INDEX_TO_LABEL[index]]
+
+
 def resolve_duration(value: int | str) -> int:
     """Resolve a duration (index or human label) to the enum index 0..17.
 

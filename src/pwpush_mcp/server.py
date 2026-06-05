@@ -19,7 +19,7 @@ from pydantic import Field
 
 from .client import PwpushClient, PwpushError
 from .config import Config
-from .durations import DEFAULT_LABEL, INDEX_TO_LABEL, resolve_duration
+from .durations import DEFAULT_LABEL, INDEX_TO_LABEL
 
 mcp = FastMCP(
     name="pwpush",
@@ -95,24 +95,18 @@ async def create_push(
     if not file_paths and kind not in ("text", "url", "qr"):
         raise PwpushError("kind must be 'text', 'url', or 'qr' (use file_paths for file pushes)")
 
-    push: dict[str, Any] = {
-        "expire_after_duration": resolve_duration(duration),
-        "expire_after_views": expire_after_views,
-        "deletable_by_viewer": deletable_by_viewer,
-        "retrieval_step": retrieval_step,
-    }
-    if payload:
-        push["payload"] = payload
-    if not file_paths:
-        push["kind"] = kind
-    if passphrase:
-        push["passphrase"] = passphrase
-    if name:
-        push["name"] = name
-    if note:
-        push["note"] = note
-
-    return await _get_client().create_push(push, file_paths=file_paths)
+    return await _get_client().create_push(
+        payload=payload,
+        kind=kind,
+        duration=duration,
+        expire_after_views=expire_after_views,
+        passphrase=passphrase,
+        name=name,
+        note=note,
+        deletable_by_viewer=deletable_by_viewer,
+        retrieval_step=retrieval_step,
+        file_paths=file_paths,
+    )
 
 
 @mcp.tool(

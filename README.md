@@ -46,7 +46,19 @@ Set via environment variables — **the API token is never a tool argument**:
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
 | `PWPUSH_API_TOKEN` | depends on instance | — | Generate at `<base-url>/api_tokens`. Always needed for listing/audit. |
+| `PWPUSH_API_EMAIL` | v1 auth only | — | Email tied to the token; legacy (v1) instances auth via `X-User-Email` + `X-User-Token`. |
 | `PWPUSH_BASE_URL` | no | `https://pwpush.com` | EU: `https://eu.pwpush.com`. Self-hosted: your domain. |
+| `PWPUSH_API_VERSION` | no | `auto` | `auto` \| `v1` \| `v2`. Auto-detects the API generation. |
+| `PWPUSH_VERIFY_SSL` | no | `true` | Set `false` only for internal instances with an untrusted cert. |
+| `PWPUSH_CA_BUNDLE` | no | — | Path to a CA bundle (preferred over disabling verification). |
+
+### API v1 / v2
+
+The server speaks both the modern **v2** API (`pwpush.com`, `eu.pwpush.com`,
+recent self-hosted) and the legacy **v1** API (older self-hosted instances).
+It auto-detects which one the instance exposes. Note for v1: expiry is
+day-granular, so sub-day `duration` values round up to one day, and file/URL
+pushes are only available if the instance enables them.
 
 `duration` accepts a human label (`15m`, `30m`, `45m`, `1h`, `6h`, `12h`, `1d`,
 `2d`, `3d`, `4d`, `5d`, `6d`, `1w`, `2w`, `3w`, `1mo`, `2mo`, `3mo`) or the raw
