@@ -119,9 +119,7 @@ async def test_v1_preview_and_expire_paths():
 
 @respx.mock
 async def test_v1_auth_headers():
-    route = respx.get(f"{BASE}/p/active.json").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    route = respx.get(f"{BASE}/p/active.json").mock(return_value=httpx.Response(200, json=[]))
     await make_client(version="v1", token="tk", email="me@x.io").list_pushes("active")
     headers = route.calls.last.request.headers
     assert headers["X-User-Token"] == "tk"
@@ -170,11 +168,14 @@ async def test_listing_requires_token():
 
 @respx.mock
 async def test_rate_limit_surfaced():
+    # max_retries=0 isolates the surfacing behaviour from the backoff loop
+    # (retry/backoff is exercised separately in test_reliability.py).
     respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(429, headers={"Retry-After": "30"})
     )
-    with pytest.raises(PwpushError, match="429.*30"):
-        await create(make_client())
+    client = PwpushClient(Config(base_url=BASE, api_token="tok", api_version="v2", max_retries=0))
+    with pytest.raises(PwpushError, match=r"429.*30"):
+        await create(client)
 
 
 async def test_file_push_missing_file():
