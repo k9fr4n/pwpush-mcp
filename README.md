@@ -60,6 +60,11 @@ It auto-detects which one the instance exposes. Note for v1: expiry is
 day-granular, so sub-day `duration` values round up to one day, and file/URL
 pushes are only available if the instance enables them.
 
+Both paths are exercised end-to-end: **v1** against a live legacy instance,
+**v2** against `pwpush.com` (API 2.1). v2 calls target the `.json` endpoints
+deliberately — the suffix-less paths issue a cross-host redirect, so they are
+avoided to keep the payload from leaking to another host.
+
 `duration` accepts a human label (`15m`, `30m`, `45m`, `1h`, `6h`, `12h`, `1d`,
 `2d`, `3d`, `4d`, `5d`, `6d`, `1w`, `2w`, `3w`, `1mo`, `2mo`, `3mo`) or the raw
 enum index `0`–`17`.
@@ -84,6 +89,21 @@ From source:
 pip install -e ".[dev]"
 python -m pwpush_mcp
 ```
+
+### Docker (no local tooling)
+
+Run the server in a throwaway container — handy when Python/`uv` aren't
+installed on the host:
+
+```bash
+docker run --rm -i \
+  -e PWPUSH_BASE_URL="https://pwpush.com" \
+  -e PWPUSH_API_TOKEN="your-token-here" \
+  python:3.12-slim \
+  bash -c 'pip install -q pwpush-mcp && python -m pwpush_mcp'
+```
+
+For v1 (legacy self-hosted) instances also pass `-e PWPUSH_API_EMAIL=...`.
 
 ## Client configuration
 
