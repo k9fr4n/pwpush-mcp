@@ -51,6 +51,24 @@ Set via environment variables — **the API token is never a tool argument**:
 | `PWPUSH_API_VERSION` | no | `auto` | `auto` \| `v1` \| `v2`. Auto-detects the API generation. |
 | `PWPUSH_VERIFY_SSL` | no | `true` | Set `false` only for internal instances with an untrusted cert. |
 | `PWPUSH_CA_BUNDLE` | no | — | Path to a CA bundle (preferred over disabling verification). |
+| `PWPUSH_READ_ONLY` | no | `false` | Remove write tools (`create_push`, `expire_push`). |
+| `PWPUSH_ENABLED_TOOLS` | no | — | Comma-separated `fnmatch` allowlist (e.g. `list_*,get_version`). Empty = all. |
+| `PWPUSH_AUDIT_LOG` | no | `true` | Emit one redacted JSON line per write-tool call on stderr. |
+| `PWPUSH_MAX_CONCURRENT` | no | `0` | Cap concurrent HTTP requests. `0` = unlimited. |
+| `PWPUSH_MAX_RETRIES` | no | `2` | Retries for connection errors / `429` / `5xx` (backoff honours `Retry-After`). |
+| `PWPUSH_TIMEOUT` | no | `30` | Per-request HTTP timeout, in seconds. |
+
+### Security & multi-tenant
+
+- **`PWPUSH_READ_ONLY=true`** strips the write tools entirely — only
+  `preview_push`, `get_push_audit`, `list_*` and `get_version` remain. `expire_push`
+  is the one **destructive** tool (`destructiveHint`), so clients can warn on it.
+- **`PWPUSH_ENABLED_TOOLS`** narrows the exposed surface to an allowlist of
+  `fnmatch` globs, e.g. expose only listing/preview to an auditor.
+- **`PWPUSH_AUDIT_LOG`** (on by default) writes one JSON line per write call to
+  the `pwpush_mcp.audit` logger on stderr — ship it to Loki/CloudWatch/journald
+  via your runtime. Secrets (`payload`, `passphrase`, file contents, token) are
+  redacted; the token is also redacted from `Config` reprs and error text.
 
 ### API v1 / v2
 
@@ -71,6 +89,10 @@ enum index `0`–`17`.
 
 ## Install & run
 
+> Published artifacts (`pwpush-mcp` on PyPI, `ghcr.io/k9fr4n/pwpush-mcp` on GHCR)
+> are produced by the release workflow on the first `v0.2.0` tag. Until then,
+> install from source.
+
 With [`uv`](https://docs.astral.sh/uv/) (recommended):
 
 ```bash
@@ -90,20 +112,46 @@ pip install -e ".[dev]"
 python -m pwpush_mcp
 ```
 
-### Docker (no local tooling)
+### Transports
 
-Run the server in a throwaway container — handy when Python/`uv` aren't
-installed on the host:
+`stdio` is the default (Claude Desktop / Claude Code / Docker MCP Gateway). To
+expose the server over the network as Streamable-HTTP/SSE:
+
+```bash
+pwpush-mcp --listen 8000           # binds 0.0.0.0:8000, SSE at /sse
+pwpush-mcp --listen 8000 --host 127.0.0.1 --log-level DEBUG
+```
+
+### Docker
 
 ```bash
 docker run --rm -i \
   -e PWPUSH_BASE_URL="https://pwpush.com" \
   -e PWPUSH_API_TOKEN="your-token-here" \
-  python:3.12-slim \
-  bash -c 'pip install -q pwpush-mcp && python -m pwpush_mcp'
+  ghcr.io/k9fr4n/pwpush-mcp:latest          # stdio (default)
+```
+
+HTTP mode via `compose.yml` (override the entrypoint with `--listen`):
+
+```bash
+cp .env.example .env && $EDITOR .env
+docker compose up        # serves SSE on http://localhost:8000/sse
 ```
 
 For v1 (legacy self-hosted) instances also pass `-e PWPUSH_API_EMAIL=...`.
+
+### Docker MCP Gateway
+
+The image ships the `io.docker.server.metadata` label and a catalog entry so the
+[Docker MCP Gateway](https://docs.docker.com/ai/mcp-gateway/) can spawn it
+natively. See [`catalog/readme.md`](catalog/readme.md):
+
+```bash
+docker mcp catalog create pwpush-private
+docker mcp catalog add  pwpush-private pwpush-mcp ./catalog/server.yaml
+docker mcp server  enable pwpush-mcp
+docker mcp gateway run    --catalog pwpush-private
+```
 
 ## Client configuration
 
@@ -128,8 +176,14 @@ For v1 (legacy self-hosted) instances also pass `-e PWPUSH_API_EMAIL=...`.
 
 ```bash
 pip install -e ".[dev]"
-pytest
+ruff check src tests && ruff format --check src tests
+mypy src
+pytest -q --cov=pwpush_mcp --cov-fail-under=80
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the tool/env-var checklists and the
+release process, and [CHANGELOG.md](CHANGELOG.md) / [UPGRADING.md](UPGRADING.md)
+for version history.
 
 ## License
 
