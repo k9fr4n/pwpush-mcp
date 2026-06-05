@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **v1 `create_push` dropped `name`/`note`** ([#8](https://github.com/k9fr4n/pwpush-mcp/issues/8)):
+  on legacy (v1) instances the `name` and `note` parameters were accepted but
+  never sent to the API, so pushes came back with empty values. Both are now
+  forwarded into the v1 password/url/file request body. Instances predating the
+  `name`/`note` columns ignore the extra params, preserving prior behaviour.
+
+### Changed
+
+- The `kind` tool description now notes that `qr` is created as a text push on
+  v1 (legacy) instances, which expose no distinct QR endpoint.
+
 ## [0.2.0] - 2026-06-05
 
 First packaged, distributable release. The server moves to the low-level MCP

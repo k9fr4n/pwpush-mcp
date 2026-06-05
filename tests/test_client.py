@@ -105,6 +105,17 @@ async def test_v1_create_uses_password_wrapper_and_days():
 
 
 @respx.mock
+async def test_v1_create_forwards_name_and_note():
+    route = respx.post(f"{BASE}/p.json").mock(
+        return_value=httpx.Response(201, json={"url_token": "n82", "payload": "leak"})
+    )
+    await create(make_client(version="v1"), name="MY-NAME", note="MY-NOTE")
+    body = route.calls.last.request.read()
+    assert b'"name":"MY-NAME"' in body
+    assert b'"note":"MY-NOTE"' in body
+
+
+@respx.mock
 async def test_v1_preview_and_expire_paths():
     respx.get(f"{BASE}/p/n82/preview.json").mock(
         return_value=httpx.Response(200, json={"url": f"{BASE}/fr/p/n82"})
