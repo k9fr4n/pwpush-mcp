@@ -16,15 +16,28 @@ human who opens the link.
 
 | Tool | Description | Auth |
 |------|-------------|------|
-| `create_push` | Create a secret link (text / url / qr). Returns the share URL, never the secret. | token |
-| `preview_push` | Get a push's share URL **without consuming a view**. | none |
-| `expire_push` | Permanently expire a push. **Irreversible.** | token |
+| `create_push` | Create a secret link (text / url / qr / file). Returns the share URL, never the secret. | optional* |
+| `preview_push` | Get a push's share URL **without consuming a view**. | optional* |
+| `expire_push` | Permanently expire a push. **Irreversible.** | optional* |
 | `get_push_audit` | View access log (IPs, user agents, events). | token |
 | `list_active_pushes` | List active pushes for the account. | token |
 | `list_expired_pushes` | List expired pushes for the account. | token |
 | `get_version` | Report the instance version and feature flags. | none |
 
-> File pushes (multipart uploads) are not supported in this version.
+\* The bearer token is sent whenever `PWPUSH_API_TOKEN` is set. Whether it is
+*required* depends on the instance: some allow anonymous push creation, preview,
+and expiry (for pushes created with `deletable_by_viewer`). Listing and audit
+are always account-scoped and need a token.
+
+### Defaults
+
+New pushes expire after **1 view** or **7 days** (whichever comes first), with a
+retrieval step enabled. Override per call via `expire_after_views` and `duration`.
+
+### File pushes
+
+Attach one or more local files by passing `file_paths`; `kind` is forced to
+`file` and the upload is sent as multipart. `payload` is optional in that case.
 
 ## Configuration
 
@@ -32,7 +45,7 @@ Set via environment variables — **the API token is never a tool argument**:
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
-| `PWPUSH_API_TOKEN` | for create/expire/audit/list | — | Generate at `<base-url>/api_tokens`. |
+| `PWPUSH_API_TOKEN` | depends on instance | — | Generate at `<base-url>/api_tokens`. Always needed for listing/audit. |
 | `PWPUSH_BASE_URL` | no | `https://pwpush.com` | EU: `https://eu.pwpush.com`. Self-hosted: your domain. |
 
 `duration` accepts a human label (`15m`, `30m`, `45m`, `1h`, `6h`, `12h`, `1d`,

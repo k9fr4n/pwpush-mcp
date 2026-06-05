@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from .client import SUPPORTED_KINDS, PwpushClient, PwpushError
+from .client import PwpushClient, PwpushError
 from .config import Config
 from .durations import DEFAULT_LABEL, INDEX_TO_LABEL, resolve_duration
 
@@ -51,15 +51,22 @@ _DURATION_HELP = (
     annotations={"title": "Create push", "readOnlyHint": False, "destructiveHint": False},
 )
 async def create_push(
-    payload: Annotated[str, Field(description="The secret to push (text, a URL, or QR content).")],
+    payload: Annotated[
+        str | None,
+        Field(description="The secret to push (text, a URL, or QR content). Optional when file_paths are given."),
+    ] = None,
     kind: Annotated[
         str,
-        Field(description=f"Push type, one of {SUPPORTED_KINDS}. Default 'text'."),
+        Field(description="Push type: 'text', 'url', or 'qr'. Ignored when file_paths are given (forced to 'file')."),
     ] = "text",
+    file_paths: Annotated[
+        list[str] | None,
+        Field(description="Local file path(s) to attach as a file push (multipart upload)."),
+    ] = None,
     duration: Annotated[str, Field(description=_DURATION_HELP)] = DEFAULT_LABEL,
     expire_after_views: Annotated[
         int, Field(ge=1, le=100, description="Number of views before expiry (1-100).")
-    ] = 5,
+    ] = 1,
     passphrase: Annotated[
         str | None, Field(description="Optional passphrase required to view the secret.")
     ] = None,
@@ -77,19 +84,27 @@ async def create_push(
     """Create a Password Pusher secret link and return its sharing URL.
 
     The secret payload is NOT echoed back. Share the returned `html_url` with
-    the recipient. Requires PWPUSH_API_TOKEN.
+    the recipient. A token is sent if PWPUSH_API_TOKEN is set; some instances
+    also allow anonymous push creation.
+
+    Pass `file_paths` to attach one or more local files (a file push). For a
+    text/url/qr push, set `payload` and `kind`.
     """
-    if kind not in SUPPORTED_KINDS:
-        raise PwpushError(f"kind must be one of {SUPPORTED_KINDS}; file pushes are not supported")
+    if not payload and not file_paths:
+        raise PwpushError("provide a payload, file_paths, or both")
+    if not file_paths and kind not in ("text", "url", "qr"):
+        raise PwpushError("kind must be 'text', 'url', or 'qr' (use file_paths for file pushes)")
 
     push: dict[str, Any] = {
-        "payload": payload,
-        "kind": kind,
         "expire_after_duration": resolve_duration(duration),
         "expire_after_views": expire_after_views,
         "deletable_by_viewer": deletable_by_viewer,
         "retrieval_step": retrieval_step,
     }
+    if payload:
+        push["payload"] = payload
+    if not file_paths:
+        push["kind"] = kind
     if passphrase:
         push["passphrase"] = passphrase
     if name:
@@ -97,7 +112,7 @@ async def create_push(
     if note:
         push["note"] = note
 
-    return await _get_client().create_push(push)
+    return await _get_client().create_push(push, file_paths=file_paths)
 
 
 @mcp.tool(

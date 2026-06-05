@@ -16,6 +16,8 @@ from pwpush_mcp.durations import resolve_duration
         ("1d", 6),
         ("1day", 6),
         ("1w", 12),
+        ("7d", 12),
+        ("7days", 12),
         ("1week", 12),
         ("1mo", 15),
         ("3mo", 17),

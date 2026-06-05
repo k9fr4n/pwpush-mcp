@@ -45,6 +45,9 @@ _ALIASES: dict[str, str] = {
     "4days": "4d",
     "5days": "5d",
     "6days": "6d",
+    # 7 days is not a distinct enum value; it is exactly one week.
+    "7d": "1w",
+    "7days": "1w",
     "1week": "1w",
     "2weeks": "2w",
     "3weeks": "3w",
@@ -53,7 +56,7 @@ _ALIASES: dict[str, str] = {
     "3months": "3mo",
 }
 
-DEFAULT_LABEL = "1d"
+DEFAULT_LABEL = "7d"  # 7 days == one week (enum index 12)
 
 
 def resolve_duration(value: int | str) -> int:

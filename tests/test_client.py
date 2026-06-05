@@ -41,10 +41,42 @@ async def test_preview_no_auth_header_required():
     assert "Authorization" not in route.calls.last.request.headers
 
 
-async def test_auth_required_without_token():
+@respx.mock
+async def test_create_works_without_token():
+    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+        return_value=httpx.Response(201, json={"url_token": "abc"})
+    )
+    await make_client(token=None).create_push({"payload": "s"})
+    assert "Authorization" not in route.calls.last.request.headers
+
+
+async def test_listing_requires_token():
     client = make_client(token=None)
     with pytest.raises(PwpushError, match="PWPUSH_API_TOKEN"):
-        await client.create_push({"payload": "s"})
+        await client.list_pushes("active")
+
+
+@respx.mock
+async def test_file_push_multipart(tmp_path):
+    f = tmp_path / "creds.txt"
+    f.write_text("hello")
+    route = respx.post(f"{BASE}/api/v2/pushes").mock(
+        return_value=httpx.Response(201, json={"url_token": "abc", "payload": "leak"})
+    )
+    result = await make_client().create_push(
+        {"expire_after_views": 1}, file_paths=[str(f)]
+    )
+    assert result == {"url_token": "abc"}
+    req = route.calls.last.request
+    assert req.headers["content-type"].startswith("multipart/form-data")
+    body = req.content.decode("utf-8", "replace")
+    assert 'name="push[files][]"' in body
+    assert 'name="push[kind]"' in body and "file" in body
+
+
+async def test_file_push_missing_file():
+    with pytest.raises(PwpushError, match="file not found"):
+        await make_client().create_push({}, file_paths=["/no/such/file.txt"])
 
 
 @respx.mock
