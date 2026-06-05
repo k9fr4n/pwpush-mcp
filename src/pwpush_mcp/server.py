@@ -165,7 +165,8 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
                     "default": "text",
                     "description": (
                         "Push type: 'text', 'url', or 'qr'. Ignored when "
-                        "file_paths are given (forced to 'file')."
+                        "file_paths are given (forced to 'file'). On v1 "
+                        "(legacy) instances 'qr' is created as a text push."
                     ),
                 },
                 "file_paths": {

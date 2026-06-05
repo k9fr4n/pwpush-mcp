@@ -307,6 +307,8 @@ class PwpushClient:
             duration=duration,
             expire_after_views=expire_after_views,
             passphrase=passphrase,
+            name=name,
+            note=note,
             deletable_by_viewer=deletable_by_viewer,
             retrieval_step=retrieval_step,
             file_paths=file_paths,
@@ -356,6 +358,13 @@ class PwpushClient:
         }
         if k["passphrase"]:
             common["passphrase"] = k["passphrase"]
+        # name/note were added as columns in later 1.x releases. Forward them
+        # when supplied; instances that predate the columns ignore unknown
+        # params (Rails strong params), matching the prior silent behaviour.
+        if k["name"]:
+            common["name"] = k["name"]
+        if k["note"]:
+            common["note"] = k["note"]
 
         if k["file_paths"]:
             form = {f"file[{key}]": _form_value(val) for key, val in common.items()}
