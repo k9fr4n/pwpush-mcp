@@ -9,15 +9,17 @@ The payload contains:
 - ts:      ISO-8601 timestamp (UTC, second precision)
 - tool:    MCP tool name
 - args:    redacted call arguments (secret-bearing keys stripped)
-- target:  best-effort identifier (url_token / name) for grep-ability
+- target:  best-effort identifier (url_token / hashed name) for grep-ability
 - status:  "ok" | "error"
 - error:   scrubbed exception text (only when status=error)
 
-The secret ``payload`` / ``passphrase`` / file contents are NEVER logged.
+The secret ``payload`` / ``passphrase`` / ``note`` / ``name`` / file contents
+are NEVER logged verbatim.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -29,8 +31,12 @@ __all__ = ["configure", "log_call", "scrub"]
 
 log = logging.getLogger("pwpush_mcp.audit")
 
-# Argument keys whose values must never appear in the audit log.
-_REDACT: frozenset[str] = frozenset({"payload", "passphrase", "token", "api_token", "file_paths"})
+# Argument keys whose values must never appear in the audit log. ``note`` is a
+# creator-private field and ``name`` is hashed in :func:`_target` rather than
+# logged verbatim (see below).
+_REDACT: frozenset[str] = frozenset(
+    {"payload", "passphrase", "token", "api_token", "file_paths", "note", "name"}
+)
 
 # Free-text secret patterns applied by :func:`scrub` to any string about to be
 # logged or surfaced to the operator. Each pattern keeps the *label* (group 1)
@@ -66,7 +72,10 @@ def _target(args: dict[str, Any]) -> str | None:
         return str(token)
     name = args.get("name")
     if name:
-        return f"name:{name}"
+        # ``name`` may carry sensitive context; keep grep-ability via a stable
+        # short digest instead of logging the value verbatim.
+        digest = hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:12]
+        return f"name:sha256:{digest}"
     return None
 
 

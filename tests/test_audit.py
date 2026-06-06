@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
@@ -56,14 +57,27 @@ def test_log_call_redacts_secret_args(caplog):
     with caplog.at_level(logging.INFO, logger="pwpush_mcp.audit"):
         audit.log_call(
             "create_push",
-            {"payload": "s3cret", "passphrase": "p", "name": "release-key", "duration": "1d"},
+            {
+                "payload": "s3cret",
+                "passphrase": "p",
+                "name": "release-key",
+                "note": "private-note",
+                "duration": "1d",
+            },
         )
-    record = json.loads(caplog.records[-1].message)
+    raw = caplog.records[-1].message
+    record = json.loads(raw)
     assert record["tool"] == "create_push"
     assert record["args"]["payload"] == "***"
     assert record["args"]["passphrase"] == "***"
+    assert record["args"]["name"] == "***"  # name redacted in args
+    assert record["args"]["note"] == "***"  # creator-private note redacted
     assert record["args"]["duration"] == "1d"  # non-secret kept
-    assert record["target"] == "name:release-key"
+    # name is hashed (not verbatim) in target for grep-ability
+    digest = hashlib.sha256(b"release-key").hexdigest()[:12]
+    assert record["target"] == f"name:sha256:{digest}"
+    assert "release-key" not in raw
+    assert "private-note" not in raw
     assert record["status"] == "ok"
 
 
