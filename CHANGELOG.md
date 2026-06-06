@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-06
+
+A security-hardening release. **Note the behavioural changes**: file pushes are
+now disabled unless `PWPUSH_FILE_ROOT` is set, and `--listen` requires
+`MCP_HTTP_TOKEN` and binds loopback by default. `stdio` mode is unaffected.
+
 ### Security
 
 - **HTTP transport hardened** ([#10](https://github.com/k9fr4n/pwpush-mcp/issues/10)):
@@ -86,5 +92,6 @@ distribution + governance setup inspired by
   drift check, and a Docker build job; Actions are pinned to commit SHAs.
 - Dependency upper bounds added for `mcp` (`<2.0`) and `httpx` (`<1.0`).
 
-[Unreleased]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k9fr4n/pwpush-mcp/releases/tag/v0.2.0
