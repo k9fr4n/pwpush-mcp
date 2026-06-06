@@ -33,7 +33,8 @@ def test_default_selects_stdio(captured_run):
     assert captured_run["name"] == "_run_stdio"
 
 
-def test_listen_selects_http(captured_run):
+def test_listen_selects_http(captured_run, monkeypatch):
+    monkeypatch.setenv("MCP_HTTP_TOKEN", "s3cret")
     assert cli.main(["--listen", "8123"]) == 0
     assert captured_run["name"] == "_run_http"
 
@@ -41,6 +42,80 @@ def test_listen_selects_http(captured_run):
 def test_invalid_log_level_rejected():
     with pytest.raises(SystemExit):
         cli.main(["--log-level", "TRACE"])
+
+
+def test_default_host_is_loopback(monkeypatch):
+    monkeypatch.setenv("PWPUSH_BASE_URL", "https://pwpush.test")
+    monkeypatch.setenv("MCP_HTTP_TOKEN", "s3cret")
+    monkeypatch.delenv("MCP_HTTP_ALLOWED_HOSTS", raising=False)
+    captured: dict[str, object] = {}
+
+    async def fake_http(host, port, log_level, *, token, allowed_hosts):
+        captured.update(host=host, token=token, allowed_hosts=allowed_hosts)
+
+    monkeypatch.setattr(cli, "_run_http", fake_http)
+    assert cli.main(["--listen", "8123"]) == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["token"] == "s3cret"
+    assert "127.0.0.1" in captured["allowed_hosts"]  # type: ignore[operator]
+
+
+# -- HTTP transport security (#10) ------------------------------------------
+
+
+def test_listen_without_token_fails_closed(captured_run, monkeypatch):
+    monkeypatch.delenv("MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.delenv("MCP_HTTP_ALLOW_UNAUTHENTICATED", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--listen", "8123"])
+    assert exc.value.code != 0
+    assert "name" not in captured_run  # never reached _run_http
+
+
+def test_listen_unauthenticated_opt_in(captured_run, monkeypatch):
+    monkeypatch.delenv("MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.setenv("MCP_HTTP_ALLOW_UNAUTHENTICATED", "true")
+    assert cli.main(["--listen", "8123"]) == 0
+    assert captured_run["name"] == "_run_http"
+
+
+async def test_bearer_middleware_rejects_missing_and_bad_token():
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["passed"] = True
+
+    mw = cli._BearerAuthMiddleware(app, token="good")
+    sent: list[dict] = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    # no header -> 401, app not called
+    await mw({"type": "http", "headers": []}, None, send)
+    assert sent[0]["status"] == 401
+    assert "passed" not in seen
+
+    # wrong token -> 401
+    sent.clear()
+    await mw({"type": "http", "headers": [(b"authorization", b"Bearer bad")]}, None, send)
+    assert sent[0]["status"] == 401
+    assert "passed" not in seen
+
+    # correct token -> passes through
+    await mw({"type": "http", "headers": [(b"authorization", b"Bearer good")]}, None, send)
+    assert seen.get("passed") is True
+
+
+async def test_bearer_middleware_passthrough_when_no_token():
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["passed"] = True
+
+    mw = cli._BearerAuthMiddleware(app, token=None)
+    await mw({"type": "http", "headers": []}, None, lambda m: None)
+    assert seen.get("passed") is True
 
 
 async def test_run_stdio_builds_server(monkeypatch):

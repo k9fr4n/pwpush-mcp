@@ -90,6 +90,11 @@ class Config:
     # When True, every WRITE tool invocation emits one JSON audit line on the
     # `pwpush_mcp.audit` logger (stderr by default).
     audit_log: bool = True
+    # Allowlist root for file pushes. File uploads are DISABLED unless this is
+    # set; when set, create_push(file_paths=...) may only read files located
+    # under this directory (after symlink resolution). Guards against an
+    # over-eager or malicious client exfiltrating arbitrary local files.
+    file_root: str | None = None
 
     @classmethod
     def from_env(cls) -> Config:
@@ -112,6 +117,7 @@ class Config:
             read_only=_env_bool("PWPUSH_READ_ONLY", False),
             enabled_tools=_split_csv(_raw_env("PWPUSH_ENABLED_TOOLS")),
             audit_log=_env_bool("PWPUSH_AUDIT_LOG", True),
+            file_root=_raw_env("PWPUSH_FILE_ROOT"),
         )
 
     @property
@@ -135,7 +141,8 @@ class Config:
             f"verify_ssl={self.verify_ssl!r}, ca_bundle={self.ca_bundle!r}, "
             f"timeout={self.timeout!r}, max_retries={self.max_retries!r}, "
             f"max_concurrent={self.max_concurrent!r}, read_only={self.read_only!r}, "
-            f"enabled_tools={self.enabled_tools!r}, audit_log={self.audit_log!r})"
+            f"enabled_tools={self.enabled_tools!r}, audit_log={self.audit_log!r}, "
+            f"file_root={self.file_root!r})"
         )
 
     def __str__(self) -> str:

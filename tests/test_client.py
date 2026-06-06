@@ -8,9 +8,15 @@ from pwpush_mcp.config import Config
 BASE = "https://pwpush.test"
 
 
-def make_client(token="tok", version="v2", email=None) -> PwpushClient:
+def make_client(token="tok", version="v2", email=None, file_root=None) -> PwpushClient:
     return PwpushClient(
-        Config(base_url=BASE, api_token=token, api_email=email, api_version=version)
+        Config(
+            base_url=BASE,
+            api_token=token,
+            api_email=email,
+            api_version=version,
+            file_root=file_root,
+        )
     )
 
 
@@ -79,7 +85,7 @@ async def test_v2_file_push_multipart(tmp_path):
     route = respx.post(f"{BASE}/api/v2/pushes.json").mock(
         return_value=httpx.Response(201, json={"url_token": "abc", "payload": "leak"})
     )
-    result = await create(make_client(), payload=None, file_paths=[str(f)])
+    result = await create(make_client(file_root=str(tmp_path)), payload=None, file_paths=[str(f)])
     assert result == {"url_token": "abc"}
     req = route.calls.last.request
     assert req.headers["content-type"].startswith("multipart/form-data")
@@ -144,7 +150,11 @@ async def test_v1_file_push_disabled_maps_to_feature_error(tmp_path):
     f.write_text("x")
     respx.post(f"{BASE}/f.json").mock(return_value=httpx.Response(404))
     with pytest.raises(FeatureDisabledError, match="file pushes are not enabled"):
-        await create(make_client(version="v1"), payload=None, file_paths=[str(f)])
+        await create(
+            make_client(version="v1", file_root=str(tmp_path)),
+            payload=None,
+            file_paths=[str(f)],
+        )
 
 
 # -- auto-detection & shared behaviour --------------------------------------
@@ -189,6 +199,64 @@ async def test_rate_limit_surfaced():
         await create(client)
 
 
-async def test_file_push_missing_file():
+async def test_file_push_missing_file(tmp_path):
+    missing = tmp_path / "nope.txt"
     with pytest.raises(PwpushError, match="file not found"):
-        await create(make_client(version="v2"), payload=None, file_paths=["/no/such/file.txt"])
+        await create(
+            make_client(version="v2", file_root=str(tmp_path)),
+            payload=None,
+            file_paths=[str(missing)],
+        )
+
+
+# -- file-push allowlist (#11) ----------------------------------------------
+
+
+async def test_file_push_disabled_without_root(tmp_path):
+    f = tmp_path / "creds.txt"
+    f.write_text("x")
+    with pytest.raises(PwpushError, match="file pushes are disabled"):
+        await create(make_client(version="v2"), payload=None, file_paths=[str(f)])
+
+
+async def test_file_push_rejects_path_outside_root(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top-secret")
+    with pytest.raises(PwpushError, match="outside allowed root"):
+        await create(
+            make_client(version="v2", file_root=str(root)),
+            payload=None,
+            file_paths=[str(outside)],
+        )
+
+
+async def test_file_push_rejects_traversal(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("top-secret")
+    traversal = root / ".." / "secret.txt"
+    with pytest.raises(PwpushError, match="outside allowed root"):
+        await create(
+            make_client(version="v2", file_root=str(root)),
+            payload=None,
+            file_paths=[str(traversal)],
+        )
+
+
+async def test_file_push_rejects_symlink_escape(tmp_path):
+    import os
+
+    root = tmp_path / "allowed"
+    root.mkdir()
+    target = tmp_path / "secret.txt"
+    target.write_text("top-secret")
+    link = root / "link.txt"
+    os.symlink(target, link)  # symlink inside root pointing outside
+    with pytest.raises(PwpushError, match="outside allowed root"):
+        await create(
+            make_client(version="v2", file_root=str(root)),
+            payload=None,
+            file_paths=[str(link)],
+        )
