@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **HTTP transport hardened** ([#10](https://github.com/k9fr4n/pwpush-mcp/issues/10)):
+  `--listen` now binds `127.0.0.1` by default (was `0.0.0.0`), **requires a
+  bearer token** via `MCP_HTTP_TOKEN` on `/sse` and `/messages/` (refuses to
+  start otherwise, override with `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`), and
+  validates the `Host` header (`MCP_HTTP_ALLOWED_HOSTS`) to block DNS-rebinding.
+  `stdio` mode is unaffected.
+- **File pushes gated by an allowlist** ([#11](https://github.com/k9fr4n/pwpush-mcp/issues/11)):
+  `create_push(file_paths=…)` previously opened any local path, allowing
+  arbitrary file read/exfiltration. File uploads are now **disabled unless
+  `PWPUSH_FILE_ROOT` is set**, and every path is `~`-expanded and symlink-resolved
+  before a containment check against that root, rejecting `../` traversal and
+  symlink escapes.
+- **Audit log no longer leaks `name`/`note`** ([#12](https://github.com/k9fr4n/pwpush-mcp/issues/12)):
+  both fields (`note` is creator-private) are redacted from the audit `args`,
+  and `name` is emitted as a short `sha256` digest in the audit `target` rather
+  than verbatim.
+- **Compose runtime hardening** ([#13](https://github.com/k9fr4n/pwpush-mcp/issues/13)):
+  `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, a `/tmp` tmpfs, and the
+  published port bound to `127.0.0.1` only.
+
 ### Fixed
 
 - **v1 `create_push` dropped `name`/`note`** ([#8](https://github.com/k9fr4n/pwpush-mcp/issues/8)):

@@ -54,6 +54,10 @@ Set via environment variables — **the API token is never a tool argument**:
 | `PWPUSH_READ_ONLY` | no | `false` | Remove write tools (`create_push`, `expire_push`). |
 | `PWPUSH_ENABLED_TOOLS` | no | — | Comma-separated `fnmatch` allowlist (e.g. `list_*,get_version`). Empty = all. |
 | `PWPUSH_AUDIT_LOG` | no | `true` | Emit one redacted JSON line per write-tool call on stderr. |
+| `PWPUSH_FILE_ROOT` | no | — | Allowlist root for file pushes. Unset = file uploads **disabled**. When set, `create_push(file_paths=…)` may only read files under this directory (traversal/symlink escapes rejected). |
+| `MCP_HTTP_TOKEN` | `--listen` only | — | Bearer token required on `/sse` and `/messages/`. `--listen` refuses to start without it (see below). |
+| `MCP_HTTP_ALLOW_UNAUTHENTICATED` | no | `false` | Opt out of the bearer requirement when fronting the server with your own auth proxy. |
+| `MCP_HTTP_ALLOWED_HOSTS` | no | loopback | Comma-separated `Host` allowlist (anti-DNS-rebinding). Defaults to `localhost,127.0.0.1,[::1]` + `--host`. Use `*` to allow any. |
 | `PWPUSH_MAX_CONCURRENT` | no | `0` | Cap concurrent HTTP requests. `0` = unlimited. |
 | `PWPUSH_MAX_RETRIES` | no | `2` | Retries for connection errors / `429` / `5xx` (backoff honours `Retry-After`). |
 | `PWPUSH_TIMEOUT` | no | `30` | Per-request HTTP timeout, in seconds. |
@@ -67,8 +71,28 @@ Set via environment variables — **the API token is never a tool argument**:
   `fnmatch` globs, e.g. expose only listing/preview to an auditor.
 - **`PWPUSH_AUDIT_LOG`** (on by default) writes one JSON line per write call to
   the `pwpush_mcp.audit` logger on stderr — ship it to Loki/CloudWatch/journald
-  via your runtime. Secrets (`payload`, `passphrase`, file contents, token) are
-  redacted; the token is also redacted from `Config` reprs and error text.
+  via your runtime. Secrets (`payload`, `passphrase`, `note`, `name`, file
+  contents, token) are redacted; `name` is hashed in the audit `target` for
+  grep-ability. The token is also redacted from `Config` reprs and error text.
+- **`PWPUSH_FILE_ROOT`** gates file pushes. File uploads are **disabled by
+  default** because their bytes become retrievable via the returned share URL —
+  an exfiltration vector for an over-eager or malicious client. Set it to a
+  directory to enable uploads from that subtree only; `~` expansion and symlink
+  resolution are applied before the containment check, so `../` traversal and
+  symlink escapes are rejected.
+
+> **HTTP transport (`--listen`) is sensitive.** The server holds
+> `PWPUSH_API_TOKEN` and exposes account-scoped tools. The transport has **no
+> TLS** and the legacy SSE protocol has no built-in auth, so:
+> - it binds **`127.0.0.1` by default** — only bind a public interface behind a
+>   TLS + auth reverse proxy;
+> - it **requires `MCP_HTTP_TOKEN`** (clients send `Authorization: Bearer
+>   <token>`) and refuses to start without it, unless you set
+>   `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`;
+> - it validates the `Host` header (`MCP_HTTP_ALLOWED_HOSTS`) to block
+>   DNS-rebinding from a browser.
+>
+> `stdio` mode is unaffected by all of the above.
 
 ### API v1 / v2
 
@@ -117,8 +141,9 @@ python -m pwpush_mcp
 expose the server over the network as Streamable-HTTP/SSE:
 
 ```bash
-pwpush-mcp --listen 8000           # binds 0.0.0.0:8000, SSE at /sse
-pwpush-mcp --listen 8000 --host 127.0.0.1 --log-level DEBUG
+# Requires MCP_HTTP_TOKEN; binds 127.0.0.1:8000 by default, SSE at /sse.
+MCP_HTTP_TOKEN=$(openssl rand -hex 32) pwpush-mcp --listen 8000
+# Clients then send:  Authorization: Bearer <MCP_HTTP_TOKEN>
 ```
 
 ### Docker
