@@ -8,5 +8,16 @@ services:
     # HTTP mode (override the default stdio entrypoint). Remove this section and
     # the `ports` block when spawning over stdio (e.g. via the Docker MCP Gateway).
     command: ["--listen", "8000"]
+    # Runtime hardening. The image already runs as non-root (uid 1001); these
+    # guardrails drop the remaining ambient privileges.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - /tmp
     ports:
-      - "8000:8000"
+      # Bind to loopback only: --listen has no auth/TLS, so it MUST sit behind a
+      # TLS + auth reverse proxy before being exposed beyond localhost (see #10).
+      - "127.0.0.1:8000:8000"
