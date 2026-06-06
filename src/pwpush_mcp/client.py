@@ -77,13 +77,31 @@ def _form_value(value: Any) -> str:
     return str(value)
 
 
-def _open_files(file_paths: list[str], field: str) -> tuple[list, list]:
-    """Open local files for multipart upload. Caller must close the handles."""
+def _open_files(file_paths: list[str], field: str, allowed_root: str | None) -> tuple[list, list]:
+    """Open local files for multipart upload. Caller must close the handles.
+
+    File uploads are an exfiltration vector: the bytes become retrievable via
+    the returned share URL. They are therefore disabled unless the operator
+    sets ``PWPUSH_FILE_ROOT`` (``allowed_root``), and every path — after
+    ``~`` expansion and symlink resolution — must resolve to a location under
+    that root. This blocks traversal (``../``) and symlink escapes regardless
+    of what the client/LLM supplies.
+    """
+    if allowed_root is None:
+        raise PwpushError(
+            "file pushes are disabled: set PWPUSH_FILE_ROOT to a directory to "
+            "permit uploading files located under it"
+        )
+    root = Path(allowed_root).expanduser().resolve()
     files: list[tuple[str, Any]] = []
     handles: list[Any] = []
     try:
         for raw in file_paths:
-            path = Path(raw).expanduser()
+            path = Path(raw).expanduser().resolve()
+            # Containment check first, so we never leak existence of paths
+            # outside the allowed root.
+            if not path.is_relative_to(root):
+                raise PwpushError(f"file path outside allowed root {root!s}: {raw}")
             if not path.is_file():
                 raise PwpushError(f"file not found: {raw}")
             handle = path.open("rb")
@@ -333,7 +351,7 @@ class PwpushClient:
         if k["file_paths"]:
             form = {f"push[{key}]": _form_value(val) for key, val in push.items()}
             form["push[kind]"] = "file"
-            files, handles = _open_files(k["file_paths"], "push[files][]")
+            files, handles = _open_files(k["file_paths"], "push[files][]", self._config.file_root)
             try:
                 data = await self._send(
                     "POST", "/api/v2/pushes.json", "v2", require_auth=False, data=form, files=files
@@ -370,7 +388,7 @@ class PwpushClient:
             form = {f"file[{key}]": _form_value(val) for key, val in common.items()}
             if k["payload"]:
                 form["file[payload]"] = k["payload"]
-            files, handles = _open_files(k["file_paths"], "file[files][]")
+            files, handles = _open_files(k["file_paths"], "file[files][]", self._config.file_root)
             try:
                 data = await self._send_v1_typed(
                     "/f.json", "file pushes", require_auth=False, data=form, files=files
