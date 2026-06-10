@@ -39,6 +39,22 @@ retrieval step enabled. Override per call via `expire_after_views` and `duration
 Attach one or more local files by passing `file_paths`; `kind` is forced to
 `file` and the upload is sent as multipart. `payload` is optional in that case.
 
+## Prompts
+
+User-controlled templates (slash-command style in clients that support MCP
+prompts). A prompt renders a message that guides the assistant to call the
+matching tool — it never touches the API itself.
+
+| Prompt | Arguments | Drives |
+|--------|-----------|--------|
+| `create_push` | `payload` (required); `duration`, `expire_after_views`, `passphrase`, `name`, `note` (optional) | `create_push` |
+| `preview_push` | `url_token` (required) | `preview_push` |
+| `expire_push` | `url_token` (required) | `expire_push` (asks to confirm first) |
+
+Prompts follow the same gating as tools: `PWPUSH_READ_ONLY=true` hides the
+write prompts (`create_push`, `expire_push`), and `PWPUSH_ENABLED_TOOLS`
+filters prompts by name too — a prompt is offered only when its tool is.
+
 ## Configuration
 
 Set via environment variables — **the API token is never a tool argument**:

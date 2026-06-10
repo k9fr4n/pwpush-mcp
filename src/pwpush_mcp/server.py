@@ -28,14 +28,28 @@ from dataclasses import dataclass
 from typing import Any
 
 from mcp.server import Server
-from mcp.types import TextContent, Tool, ToolAnnotations
+from mcp.types import (
+    GetPromptResult,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    TextContent,
+    Tool,
+    ToolAnnotations,
+)
 
 from . import audit
 from .client import PwpushClient, PwpushError
 from .config import Config
 from .durations import DEFAULT_LABEL, INDEX_TO_LABEL
 
-__all__ = ["TOOL_REGISTRY", "WRITE_TOOLS", "PwpushMCPServer", "build_server"]
+__all__ = [
+    "PROMPT_REGISTRY",
+    "TOOL_REGISTRY",
+    "WRITE_TOOLS",
+    "PwpushMCPServer",
+    "build_server",
+]
 
 log = logging.getLogger("pwpush_mcp.server")
 
@@ -310,6 +324,140 @@ WRITE_TOOLS: frozenset[str] = frozenset(spec.name for spec in TOOL_REGISTRY if s
 
 
 # ---------------------------------------------------------------------------
+# Prompt registry
+# ---------------------------------------------------------------------------
+#
+# MCP prompts are *user-controlled* templates (slash-command style). They do not
+# touch the API themselves: each renders a user message that asks the assistant
+# to call the matching tool. A prompt is exposed only when its underlying tool is
+# (read_only and enabled_tools filtering mirror the tool registry), so a
+# read-only server never advertises a prompt that drives a write tool.
+
+
+@dataclass(frozen=True)
+class PromptSpec:
+    name: str
+    title: str
+    description: str
+    arguments: tuple[PromptArgument, ...]
+    builder: Callable[[dict[str, str]], str]
+    is_write: bool = False
+
+    def to_prompt(self) -> Prompt:
+        return Prompt(
+            name=self.name,
+            title=self.title,
+            description=self.description,
+            arguments=list(self.arguments),
+        )
+
+    def render(self, arguments: dict[str, str]) -> GetPromptResult:
+        for arg in self.arguments:
+            if arg.required and not (arguments.get(arg.name) or "").strip():
+                raise ValueError(f"missing required argument: {arg.name}")
+        return GetPromptResult(
+            description=self.description,
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=self.builder(arguments)),
+                )
+            ],
+        )
+
+
+def _opts(args: dict[str, str], *names: str) -> str:
+    """Render the optional, present arguments as a bullet list (or empty)."""
+    lines = [f"- {n}: {args[n]}" for n in names if (args.get(n) or "").strip()]
+    return ("\nApply these options:\n" + "\n".join(lines)) if lines else ""
+
+
+def _build_create_push(args: dict[str, str]) -> str:
+    return (
+        "Create a Password Pusher secret link by calling the `create_push` tool "
+        "with this payload:\n\n"
+        f"{args['payload']}\n"
+        + _opts(args, "duration", "expire_after_views", "passphrase", "name", "note")
+        + "\n\nReturn only the resulting `html_url` to share. Never echo the secret back."
+    )
+
+
+def _build_preview_push(args: dict[str, str]) -> str:
+    return (
+        "Call the `preview_push` tool for url_token "
+        f"`{args['url_token']}` and return its share URL. "
+        "This must NOT consume a view."
+    )
+
+
+def _build_expire_push(args: dict[str, str]) -> str:
+    return (
+        f"I want to permanently expire the push with url_token `{args['url_token']}`. "
+        "This is IRREVERSIBLE and destroys the payload and any attached files. "
+        "Confirm the url_token with me explicitly before calling the `expire_push` tool."
+    )
+
+
+PROMPT_REGISTRY: tuple[PromptSpec, ...] = (
+    PromptSpec(
+        name="create_push",
+        title="Create a push",
+        description="Guided creation of a Password Pusher secret link.",
+        arguments=(
+            PromptArgument(
+                name="payload", description="The secret to push (text or URL).", required=True
+            ),
+            PromptArgument(name="duration", description=_DURATION_HELP, required=False),
+            PromptArgument(
+                name="expire_after_views",
+                description="Number of views before expiry (1-100).",
+                required=False,
+            ),
+            PromptArgument(
+                name="passphrase",
+                description="Optional passphrase required to view the secret.",
+                required=False,
+            ),
+            PromptArgument(name="name", description="Optional name for the push.", required=False),
+            PromptArgument(
+                name="note",
+                description="Optional private note, visible only to the creator.",
+                required=False,
+            ),
+        ),
+        builder=_build_create_push,
+        is_write=True,
+    ),
+    PromptSpec(
+        name="preview_push",
+        title="Preview a push URL",
+        description="Fetch a push's share URL without consuming a view.",
+        arguments=(
+            PromptArgument(
+                name="url_token", description="The url_token of an existing push.", required=True
+            ),
+        ),
+        builder=_build_preview_push,
+        is_write=False,
+    ),
+    PromptSpec(
+        name="expire_push",
+        title="Expire a push",
+        description="Permanently expire (delete) a push — irreversible.",
+        arguments=(
+            PromptArgument(
+                name="url_token",
+                description="The url_token of the push to expire.",
+                required=True,
+            ),
+        ),
+        builder=_build_expire_push,
+        is_write=True,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
@@ -317,21 +465,39 @@ WRITE_TOOLS: frozenset[str] = frozenset(spec.name for spec in TOOL_REGISTRY if s
 class PwpushMCPServer(Server):
     """Low-level MCP server carrying its config and a shared client."""
 
-    def __init__(self, cfg: Config, enabled: dict[str, ToolSpec]) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        enabled: dict[str, ToolSpec],
+        prompts: dict[str, PromptSpec],
+    ) -> None:
         super().__init__(name="pwpush")
         self._cfg = cfg
         self._enabled = enabled
+        self._prompts = prompts
         self._client = PwpushClient(cfg)
         self._register_handlers()
 
     def _register_handlers(self) -> None:
         specs = self._enabled
+        prompts = self._prompts
         cfg = self._cfg
         client = self._client
 
         @self.list_tools()
         async def _list_tools() -> list[Tool]:
             return [spec.to_tool() for spec in specs.values()]
+
+        @self.list_prompts()
+        async def _list_prompts() -> list[Prompt]:
+            return [spec.to_prompt() for spec in prompts.values()]
+
+        @self.get_prompt()
+        async def _get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+            spec = prompts.get(name)
+            if spec is None:
+                raise ValueError(f"unknown or disabled prompt: {name}")
+            return spec.render(arguments or {})
 
         @self.call_tool()
         async def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
@@ -375,10 +541,31 @@ def _resolve_enabled(cfg: Config) -> dict[str, ToolSpec]:
     return enabled
 
 
+def _resolve_enabled_prompts(cfg: Config) -> dict[str, PromptSpec]:
+    """Mirror the tool filtering for prompts (read_only + enabled_tools)."""
+    enabled: dict[str, PromptSpec] = {}
+    for spec in PROMPT_REGISTRY:
+        if cfg.read_only and spec.is_write:
+            continue
+        if cfg.enabled_tools and not any(
+            fnmatch.fnmatch(spec.name, pat) for pat in cfg.enabled_tools
+        ):
+            continue
+        enabled[spec.name] = spec
+    return enabled
+
+
 def build_server(cfg: Config | None = None) -> PwpushMCPServer:
-    """Build the MCP server with the enabled tools registered."""
+    """Build the MCP server with the enabled tools and prompts registered."""
     cfg = cfg or Config.from_env()
     audit.configure(enabled=cfg.audit_log)
     enabled = _resolve_enabled(cfg)
-    log.debug("pwpush-mcp: %d tool(s) enabled: %s", len(enabled), sorted(enabled))
-    return PwpushMCPServer(cfg, enabled)
+    prompts = _resolve_enabled_prompts(cfg)
+    log.debug(
+        "pwpush-mcp: %d tool(s) enabled: %s; %d prompt(s): %s",
+        len(enabled),
+        sorted(enabled),
+        len(prompts),
+        sorted(prompts),
+    )
+    return PwpushMCPServer(cfg, enabled, prompts)
