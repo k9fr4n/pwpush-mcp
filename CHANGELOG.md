@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **MCP prompts** for the push lifecycle: `create_push`, `preview_push`, and
+  `expire_push`. These are user-controlled templates (slash-command style) that
+  render a message guiding the assistant to call the matching tool — they never
+  touch the API themselves. Prompts honour `PWPUSH_READ_ONLY` and
+  `PWPUSH_ENABLED_TOOLS`: a prompt is advertised only when its underlying tool
+  is, and the `expire_push` prompt asks for explicit confirmation first.
+
 ## [0.3.0] - 2026-06-06
 
 A security-hardening release. **Note the behavioural changes**: file pushes are

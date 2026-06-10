@@ -11,6 +11,7 @@ import respx
 
 from pwpush_mcp.config import Config
 from pwpush_mcp.server import (
+    PROMPT_REGISTRY,
     TOOL_REGISTRY,
     WRITE_TOOLS,
     build_server,
@@ -39,6 +40,22 @@ async def _call(srv, name: str, arguments: dict):
     )
     res = await srv.request_handlers[t.CallToolRequest](req)
     return res.root.content[0].text
+
+
+async def _list_prompt_names(srv) -> list[str]:
+    res = await srv.request_handlers[t.ListPromptsRequest](
+        t.ListPromptsRequest(method="prompts/list")
+    )
+    return [p.name for p in res.root.prompts]
+
+
+async def _get_prompt(srv, name: str, arguments: dict):
+    req = t.GetPromptRequest(
+        method="prompts/get",
+        params=t.GetPromptRequestParams(name=name, arguments=arguments),
+    )
+    res = await srv.request_handlers[t.GetPromptRequest](req)
+    return res.root
 
 
 # -- registry shape ----------------------------------------------------------
@@ -137,3 +154,51 @@ def test_every_tool_schema_is_object(name):
     spec = next(s for s in TOOL_REGISTRY if s.name == name)
     assert spec.input_schema["type"] == "object"
     assert spec.input_schema.get("additionalProperties") is False
+
+
+# -- prompts -----------------------------------------------------------------
+
+
+async def test_default_exposes_all_prompts():
+    srv = build_server(_cfg())
+    assert set(await _list_prompt_names(srv)) == {s.name for s in PROMPT_REGISTRY}
+
+
+async def test_read_only_removes_write_prompts():
+    srv = build_server(_cfg(read_only=True))
+    names = set(await _list_prompt_names(srv))
+    assert names == {"preview_push"}  # create_push / expire_push are write prompts
+
+
+async def test_enabled_tools_allowlist_filters_prompts():
+    srv = build_server(_cfg(enabled_tools=("preview_*",)))
+    assert set(await _list_prompt_names(srv)) == {"preview_push"}
+
+
+async def test_get_prompt_create_push_builds_message():
+    srv = build_server(_cfg())
+    res = await _get_prompt(srv, "create_push", {"payload": "hunter2", "duration": "1h"})
+    text = res.messages[0].content.text
+    assert res.messages[0].role == "user"
+    assert "hunter2" in text and "1h" in text
+    assert "create_push" in text
+
+
+async def test_get_prompt_missing_required_arg_raises():
+    srv = build_server(_cfg())
+    with pytest.raises(ValueError, match="url_token"):
+        await _get_prompt(srv, "preview_push", {})
+
+
+async def test_get_prompt_expire_requires_confirmation():
+    srv = build_server(_cfg())
+    res = await _get_prompt(srv, "expire_push", {"url_token": "tok123"})
+    text = res.messages[0].content.text
+    assert "tok123" in text
+    assert "IRREVERSIBLE" in text and "Confirm" in text
+
+
+async def test_get_unknown_prompt_raises():
+    srv = build_server(_cfg())
+    with pytest.raises(ValueError, match="unknown or disabled prompt"):
+        await _get_prompt(srv, "does_not_exist", {})
