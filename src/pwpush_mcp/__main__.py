@@ -1,8 +1,9 @@
 """Entry point: ``python -m pwpush_mcp`` or the ``pwpush-mcp`` console script.
 
 Default transport is stdio (Claude Desktop / Claude Code / Docker MCP Gateway).
-Pass ``--listen PORT`` to expose the server over Streamable-HTTP/SSE behind a
-network gateway.
+Pass ``--listen PORT`` to expose the server over Streamable HTTP (single
+``/mcp`` endpoint, MCP spec revision 2025-03-26+) behind a network gateway. The
+legacy HTTP+SSE transport (``/sse`` + ``/messages/``) it replaced is deprecated.
 """
 
 from __future__ import annotations
@@ -29,6 +30,13 @@ _UNAUTH_WARNING = (
     "SECURITY WARNING: HTTP transport is running WITHOUT authentication "
     "(MCP_HTTP_ALLOW_UNAUTHENTICATED=true). The server holds PWPUSH_API_TOKEN — "
     "ensure a TLS + auth reverse proxy sits in front and the port is not exposed."
+)
+
+_PER_REQUEST_WARNING = (
+    "Multi-tenant mode is ON (PWPUSH_PER_REQUEST_CREDENTIALS=true): clients may "
+    "send their own pwpush credentials via the X-Pwpush-Token / X-Pwpush-Email "
+    "headers. These travel in clear text — serve ONLY behind TLS. The header "
+    "values are never logged."
 )
 
 
@@ -83,42 +91,56 @@ async def _run_http(
     token: str | None,
     allowed_hosts: tuple[str, ...],
 ) -> None:
-    """Run as an SSE / Streamable-HTTP server.
+    """Run as a Streamable HTTP server on a single ``/mcp`` endpoint.
 
-    The endpoints are guarded by a bearer-token gate (``token``) and a
-    TrustedHost check (``allowed_hosts``) that blocks DNS-rebinding. Both are
-    wired by :func:`main`, which fails closed when no token is configured.
+    The endpoint is guarded by a bearer-token gate (``token``) and a TrustedHost
+    check (``allowed_hosts``) that blocks DNS-rebinding. Both are wired by
+    :func:`main`, which fails closed when no token is configured. When the
+    server runs in multi-tenant mode (``PWPUSH_PER_REQUEST_CREDENTIALS=true``),
+    each request's own credentials are read from its headers in the tool
+    handler — see :meth:`PwpushMCPServer._client_for_request`.
     """
+    import contextlib
+    from collections.abc import AsyncIterator
+
     import uvicorn
-    from mcp.server.sse import SseServerTransport
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.trustedhost import TrustedHostMiddleware
-    from starlette.responses import Response
-    from starlette.routing import Mount, Route
+    from starlette.routing import Mount
 
     server = build_server()
     if not server._cfg.verify_ssl:
         log.warning(_SSL_WARNING)
     if token is None:
         log.warning(_UNAUTH_WARNING)
-    sse = SseServerTransport("/messages/")
+    if server._cfg.per_request_credentials:
+        log.warning(_PER_REQUEST_WARNING)
 
-    async def handle_sse(request: Any) -> Response:  # starlette Request
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-            await server.run(streams[0], streams[1], server.create_initialization_options())
-        return Response()
+    # stateless=True: no server-side session affinity, so any node can serve any
+    # request — the natural fit for a multi-tenant deployment where each request
+    # carries its own credentials. Request headers are attached per message in
+    # both stateful and stateless modes, so credential resolution is unaffected.
+    session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+
+    async def handle_mcp(scope: Any, receive: Any, send: Any) -> None:
+        await session_manager.handle_request(scope, receive, send)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        # The session manager's task group must wrap the whole server lifetime.
+        async with session_manager.run():
+            yield
 
     app = Starlette(
-        routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse.handle_post_message),
-        ],
+        routes=[Mount("/mcp", app=handle_mcp)],
         # Outermost first: reject untrusted Host headers before auth runs.
         middleware=[
             Middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts)),
             Middleware(_BearerAuthMiddleware, token=token),
         ],
+        lifespan=lifespan,
     )
     config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
     await uvicorn.Server(config).serve()
@@ -130,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         "--listen",
         type=int,
         metavar="PORT",
-        help="Run as an HTTP/SSE server on this port. Default: stdio mode.",
+        help="Run as a Streamable HTTP server (/mcp) on this port. Default: stdio mode.",
     )
     parser.add_argument(
         "--host",

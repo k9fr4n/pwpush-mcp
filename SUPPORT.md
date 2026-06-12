@@ -6,8 +6,8 @@
 |-----------|-----------|
 | Python | 3.10, 3.11, 3.12, 3.13 |
 | Password Pusher API | v2 (pwpush.com, eu.pwpush.com, recent self-hosted) and legacy v1 |
-| MCP clients | Claude Desktop, Claude Code, Docker MCP Gateway, LibreChat, and any MCP-compatible client (stdio or Streamable-HTTP/SSE) |
-| Transports | stdio (default), HTTP/SSE via `--listen PORT` |
+| MCP clients | Claude Desktop, Claude Code, Docker MCP Gateway, LibreChat, and any MCP-compatible client (stdio or Streamable HTTP) |
+| Transports | stdio (default), Streamable HTTP (`/mcp`) via `--listen PORT` |
 
 ## Getting help
 

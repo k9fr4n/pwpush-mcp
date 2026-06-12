@@ -44,6 +44,7 @@ _REDACT: frozenset[str] = frozenset(
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(authorization\s*:\s*bearer\s+)\S+", re.IGNORECASE),
     re.compile(r"(X-User-Token\s*[:=]\s*)[^&\s\"']+", re.IGNORECASE),
+    re.compile(r"(X-Pwpush-Token\s*[:=]\s*)[^&\s\"']+", re.IGNORECASE),
     re.compile(r"(\bapi[_-]?token\s*=\s*)[^&\s\"']+", re.IGNORECASE),
 )
 

@@ -3,6 +3,27 @@
 Migration notes between releases. See [`CHANGELOG.md`](CHANGELOG.md) for the full
 list of changes.
 
+## 0.4.0 → next
+
+### HTTP transport endpoint changed (breaking for HTTP clients only)
+
+The `--listen` transport moved from the deprecated HTTP+SSE protocol to
+**Streamable HTTP** (MCP spec revision 2025-03-26+). There is now a **single
+`/mcp` endpoint** instead of `/sse` + `/messages/`.
+
+- **Action**: update HTTP client configs from `http://host:port/sse` to
+  `http://host:port/mcp`. The bearer-token gate, `MCP_HTTP_ALLOW_UNAUTHENTICATED`
+  and `MCP_HTTP_ALLOWED_HOSTS` are unchanged.
+- **`stdio` mode is unaffected** — Claude Desktop / Claude Code / Docker MCP
+  Gateway configs keep working as-is. The tool/prompt surface is identical.
+
+### New, opt-in: multi-tenant credentials (no action required)
+
+Set `PWPUSH_PER_REQUEST_CREDENTIALS=true` to let each HTTP client send its own
+pwpush credentials via the `X-Pwpush-Token` / `X-Pwpush-Email` headers. Off by
+default — existing single-tenant deployments are unchanged. See the README's
+*Multi-tenant (per-client credentials)* section. Serve only behind TLS.
+
 ## 0.1.0 → 0.2.0
 
 No breaking changes to the **tool surface**: the seven tools, their names, and

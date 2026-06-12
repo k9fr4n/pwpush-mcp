@@ -44,6 +44,10 @@ def test_scrub_masks_v1_user_token():
     assert "secret" not in audit.scrub("X-User-Token: secret")
 
 
+def test_scrub_masks_per_request_pwpush_token():
+    assert "secret" not in audit.scrub("X-Pwpush-Token: secret")
+
+
 def test_scrub_is_idempotent():
     once = audit.scrub("Authorization: Bearer x")
     assert audit.scrub(once) == once

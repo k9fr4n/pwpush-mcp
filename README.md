@@ -71,9 +71,10 @@ Set via environment variables — **the API token is never a tool argument**:
 | `PWPUSH_ENABLED_TOOLS` | no | — | Comma-separated `fnmatch` allowlist (e.g. `list_*,get_version`). Empty = all. |
 | `PWPUSH_AUDIT_LOG` | no | `true` | Emit one redacted JSON line per write-tool call on stderr. |
 | `PWPUSH_FILE_ROOT` | no | — | Allowlist root for file pushes. Unset = file uploads **disabled**. When set, `create_push(file_paths=…)` may only read files under this directory (traversal/symlink escapes rejected). |
-| `MCP_HTTP_TOKEN` | `--listen` only | — | Bearer token required on `/sse` and `/messages/`. `--listen` refuses to start without it (see below). |
+| `MCP_HTTP_TOKEN` | `--listen` only | — | Bearer token required on the `/mcp` endpoint. `--listen` refuses to start without it (see below). |
 | `MCP_HTTP_ALLOW_UNAUTHENTICATED` | no | `false` | Opt out of the bearer requirement when fronting the server with your own auth proxy. |
 | `MCP_HTTP_ALLOWED_HOSTS` | no | loopback | Comma-separated `Host` allowlist (anti-DNS-rebinding). Defaults to `localhost,127.0.0.1,[::1]` + `--host`. Use `*` to allow any. |
+| `PWPUSH_PER_REQUEST_CREDENTIALS` | `--listen` only | `false` | Multi-tenant: let each client send its own pwpush credentials via the `X-Pwpush-Token` / `X-Pwpush-Email` headers (see below). |
 | `PWPUSH_MAX_CONCURRENT` | no | `0` | Cap concurrent HTTP requests. `0` = unlimited. |
 | `PWPUSH_MAX_RETRIES` | no | `2` | Retries for connection errors / `429` / `5xx` (backoff honours `Retry-After`). |
 | `PWPUSH_TIMEOUT` | no | `30` | Per-request HTTP timeout, in seconds. |
@@ -97,9 +98,9 @@ Set via environment variables — **the API token is never a tool argument**:
   resolution are applied before the containment check, so `../` traversal and
   symlink escapes are rejected.
 
-> **HTTP transport (`--listen`) is sensitive.** The server holds
+> **HTTP transport (`--listen`) is sensitive.** The server may hold
 > `PWPUSH_API_TOKEN` and exposes account-scoped tools. The transport has **no
-> TLS** and the legacy SSE protocol has no built-in auth, so:
+> TLS** of its own, so:
 > - it binds **`127.0.0.1` by default** — only bind a public interface behind a
 >   TLS + auth reverse proxy;
 > - it **requires `MCP_HTTP_TOKEN`** (clients send `Authorization: Bearer
@@ -109,6 +110,44 @@ Set via environment variables — **the API token is never a tool argument**:
 >   DNS-rebinding from a browser.
 >
 > `stdio` mode is unaffected by all of the above.
+
+#### Multi-tenant (per-client credentials)
+
+By default the HTTP server uses one shared identity (`PWPUSH_API_TOKEN`). Set
+**`PWPUSH_PER_REQUEST_CREDENTIALS=true`** to instead let **each client supply its
+own** pwpush credentials, so one hosted server serves many accounts:
+
+- the client sends `X-Pwpush-Token` (and `X-Pwpush-Email` for v1 instances) as
+  **HTTP headers**; the server builds a per-request, per-tenant client from them;
+- credentials ride the transport, never a tool argument — they are **never seen
+  by the language model** and are kept out of logs (the header is scrubbed);
+- only the credentials are per-request. `base_url`, `read_only`, `enabled_tools`
+  and `file_root` stay **operator-controlled**, so a tenant can neither redirect
+  the instance nor widen its own permissions;
+- if a request sends no `X-Pwpush-Token`, it falls back to the env token (so you
+  can run a pure multi-tenant server with **no** `PWPUSH_API_TOKEN` at all —
+  account-scoped calls then simply require the header).
+>
+> Credentials in headers travel in clear text: **serve only behind TLS.**
+> `MCP_HTTP_TOKEN` (transport gate) and `X-Pwpush-Token` (tenant identity) are
+> independent — keep both for a shared hosted deployment.
+
+Example client config (MCP client that supports HTTP headers):
+
+```json
+{
+  "mcpServers": {
+    "pwpush": {
+      "url": "https://pwpush-mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <MCP_HTTP_TOKEN>",
+        "X-Pwpush-Token": "<this-client's-pwpush-token>",
+        "X-Pwpush-Email": "<this-client's-email, v1 only>"
+      }
+    }
+  }
+}
+```
 
 ### API v1 / v2
 
@@ -154,12 +193,14 @@ python -m pwpush_mcp
 ### Transports
 
 `stdio` is the default (Claude Desktop / Claude Code / Docker MCP Gateway). To
-expose the server over the network as Streamable-HTTP/SSE:
+expose the server over the network as **Streamable HTTP** (single `/mcp`
+endpoint, MCP spec revision 2025-03-26+ — the legacy HTTP+SSE transport it
+replaces is deprecated):
 
 ```bash
-# Requires MCP_HTTP_TOKEN; binds 127.0.0.1:8000 by default, SSE at /sse.
+# Requires MCP_HTTP_TOKEN; binds 127.0.0.1:8000 by default, endpoint at /mcp.
 MCP_HTTP_TOKEN=$(openssl rand -hex 32) pwpush-mcp --listen 8000
-# Clients then send:  Authorization: Bearer <MCP_HTTP_TOKEN>
+# Clients then send:  Authorization: Bearer <MCP_HTTP_TOKEN>  to http://127.0.0.1:8000/mcp
 ```
 
 ### Docker
@@ -175,7 +216,7 @@ HTTP mode via `compose.yml` (override the entrypoint with `--listen`):
 
 ```bash
 cp .env.example .env && $EDITOR .env
-docker compose up        # serves SSE on http://localhost:8000/sse
+docker compose up        # serves Streamable HTTP on http://localhost:8000/mcp
 ```
 
 For v1 (legacy self-hosted) instances also pass `-e PWPUSH_API_EMAIL=...`.
