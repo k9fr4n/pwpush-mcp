@@ -7,7 +7,7 @@ environment so it can never be supplied (or logged) by the language model.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 __all__ = ["DEFAULT_BASE_URL", "VALID_API_VERSIONS", "Config"]
 
@@ -95,6 +95,16 @@ class Config:
     # under this directory (after symlink resolution). Guards against an
     # over-eager or malicious client exfiltrating arbitrary local files.
     file_root: str | None = None
+    # When True (HTTP transport only), each request may carry its own pwpush
+    # credentials via the X-Pwpush-Token / X-Pwpush-Email headers, building a
+    # per-request client. This turns one shared server into a multi-tenant
+    # proxy. The credentials never reach the language model (they ride the
+    # transport, like the env token). Defaults to False so stdio and the
+    # single-tenant HTTP behaviour are unchanged. Only the credentials are
+    # per-request; base_url, read_only, enabled_tools and file_root stay
+    # operator-controlled so a tenant can neither redirect the instance nor
+    # widen its own permissions.
+    per_request_credentials: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -118,7 +128,17 @@ class Config:
             enabled_tools=_split_csv(_raw_env("PWPUSH_ENABLED_TOOLS")),
             audit_log=_env_bool("PWPUSH_AUDIT_LOG", True),
             file_root=_raw_env("PWPUSH_FILE_ROOT"),
+            per_request_credentials=_env_bool("PWPUSH_PER_REQUEST_CREDENTIALS", False),
         )
+
+    def with_credentials(self, token: str | None, email: str | None) -> Config:
+        """Return a copy overriding only the pwpush credentials.
+
+        Used by the HTTP transport in multi-tenant mode to bind a request's
+        X-Pwpush-Token / X-Pwpush-Email headers without touching any other
+        operator-controlled setting (base_url, read_only, file_root, ...).
+        """
+        return replace(self, api_token=token, api_email=email)
 
     @property
     def verify(self) -> bool | str:
@@ -142,7 +162,8 @@ class Config:
             f"timeout={self.timeout!r}, max_retries={self.max_retries!r}, "
             f"max_concurrent={self.max_concurrent!r}, read_only={self.read_only!r}, "
             f"enabled_tools={self.enabled_tools!r}, audit_log={self.audit_log!r}, "
-            f"file_root={self.file_root!r})"
+            f"file_root={self.file_root!r}, "
+            f"per_request_credentials={self.per_request_credentials!r})"
         )
 
     def __str__(self) -> str:

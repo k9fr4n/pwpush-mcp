@@ -478,6 +478,30 @@ class PwpushMCPServer(Server):
         self._client = PwpushClient(cfg)
         self._register_handlers()
 
+    def _client_for_request(self, default: PwpushClient) -> PwpushClient:
+        """Resolve the pwpush client for the in-flight tool call.
+
+        When ``per_request_credentials`` is enabled and the current request
+        (Streamable HTTP transport only) carries an ``X-Pwpush-Token`` header,
+        build a per-request client bound to that tenant's credentials. The
+        header values never reach the model — they ride the transport, exactly
+        like the env-configured token. Any other case (stdio, no header, mode
+        disabled) returns the shared env client unchanged.
+        """
+        if not self._cfg.per_request_credentials:
+            return default
+        try:
+            request = self.request_context.request
+        except LookupError:
+            request = None
+        if request is None:
+            return default
+        token = request.headers.get("x-pwpush-token")
+        if not token:
+            return default
+        email = request.headers.get("x-pwpush-email")
+        return PwpushClient(self._cfg.with_credentials(token, email))
+
     def _register_handlers(self) -> None:
         specs = self._enabled
         prompts = self._prompts
@@ -508,8 +532,13 @@ class PwpushMCPServer(Server):
             # under read_only, but enforce explicitly in case of misconfiguration.
             if cfg.read_only and spec.is_write:
                 return _error(f"tool '{name}' is disabled (server is read-only)")
+            # In multi-tenant HTTP mode, bind this request's own credentials
+            # (X-Pwpush-Token / X-Pwpush-Email headers) to a per-request client.
+            # Falls back to the env-configured shared client (stdio, single
+            # tenant, or a request that sent no credentials).
+            active = self._client_for_request(client)
             try:
-                result = await spec.handler(client, arguments)
+                result = await spec.handler(active, arguments)
             except PwpushError as exc:
                 if cfg.audit_log and spec.is_write:
                     audit.log_call(name, arguments, status="error", error=str(exc))

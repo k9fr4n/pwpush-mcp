@@ -19,6 +19,7 @@ ENV_VARS = [
     "PWPUSH_READ_ONLY",
     "PWPUSH_ENABLED_TOOLS",
     "PWPUSH_AUDIT_LOG",
+    "PWPUSH_PER_REQUEST_CREDENTIALS",
 ]
 
 
@@ -40,6 +41,7 @@ def test_defaults():
     assert cfg.read_only is False
     assert cfg.enabled_tools == ()
     assert cfg.audit_log is True
+    assert cfg.per_request_credentials is False
 
 
 def test_security_and_reliability_knobs(monkeypatch):
@@ -94,3 +96,33 @@ def test_repr_shows_none_when_no_token():
 def test_verify_prefers_ca_bundle():
     assert Config(base_url="x", api_token=None, ca_bundle="/ca.pem").verify == "/ca.pem"
     assert Config(base_url="x", api_token=None, verify_ssl=False).verify is False
+
+
+def test_per_request_credentials_flag(monkeypatch):
+    monkeypatch.setenv("PWPUSH_PER_REQUEST_CREDENTIALS", "true")
+    assert Config.from_env().per_request_credentials is True
+
+
+def test_with_credentials_overrides_only_creds():
+    cfg = Config(
+        base_url="https://x",
+        api_token="orig",
+        api_email="o@x.io",
+        read_only=True,
+        file_root="/srv",
+        per_request_credentials=True,
+    )
+    out = cfg.with_credentials("new-tok", "n@x.io")
+    assert out.api_token == "new-tok"
+    assert out.api_email == "n@x.io"
+    # Operator-controlled settings are preserved untouched.
+    assert out.base_url == "https://x"
+    assert out.read_only is True
+    assert out.file_root == "/srv"
+    assert out.per_request_credentials is True
+
+
+def test_with_credentials_keeps_token_redacted():
+    out = Config(base_url="x", api_token=None).with_credentials("super-secret-token", None)
+    assert "super-secret-token" not in repr(out)
+    assert "***" in repr(out)

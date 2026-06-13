@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **HTTP transport migrated to Streamable HTTP** (MCP spec revision 2025-03-26+),
+  exposed on a single `/mcp` endpoint. This replaces the deprecated HTTP+SSE
+  transport (`/sse` + `/messages/`). **Breaking for HTTP clients only**: update
+  the endpoint URL from `/sse` to `/mcp`. `stdio` mode (Claude Desktop / Claude
+  Code / Docker MCP Gateway) and the tool surface are unchanged. `MCP_HTTP_TOKEN`,
+  `MCP_HTTP_ALLOW_UNAUTHENTICATED` and `MCP_HTTP_ALLOWED_HOSTS` behave as before.
+
+### Added
+
+- **Multi-tenant mode** (`PWPUSH_PER_REQUEST_CREDENTIALS=true`, HTTP only): each
+  client may send its own pwpush credentials via the `X-Pwpush-Token` /
+  `X-Pwpush-Email` headers, and the server builds a per-request, per-tenant
+  client from them. The credentials ride the transport — never a tool argument —
+  so they are never exposed to the language model, and the header is added to the
+  audit scrubber. Only credentials are per-request: `base_url`, `read_only`,
+  `enabled_tools` and `file_root` stay operator-controlled, so a tenant can
+  neither redirect the instance nor widen its permissions. Requests without the
+  header fall back to the env token, so a pure multi-tenant server can run with
+  no `PWPUSH_API_TOKEN` at all. Defaults to off (single-tenant, unchanged).
+
 ## [0.4.0] - 2026-06-10
 
 Adds MCP prompts for the push lifecycle. `stdio` mode and all existing tools are
