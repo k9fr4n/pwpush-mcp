@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-16
+
 ### Changed
 
 - **HTTP transport migrated to Streamable HTTP** (MCP spec revision 2025-03-26+),
@@ -128,7 +130,8 @@ distribution + governance setup inspired by
   drift check, and a Docker build job; Actions are pinned to commit SHAs.
 - Dependency upper bounds added for `mcp` (`<2.0`) and `httpx` (`<1.0`).
 
-[Unreleased]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/k9fr4n/pwpush-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k9fr4n/pwpush-mcp/releases/tag/v0.2.0
